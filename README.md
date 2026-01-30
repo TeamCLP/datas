@@ -337,43 +337,36 @@ python convert_classified_to_md.py
 ---
 
 # 📤 6. Étape 6 — Extraction DOCX → Markdown (Mammoth)
-**Script : `extract_docx_to_markdown.py`**
+**Script : `extract_docx_to_markdown.py`** (parallélisé)
 
 ### Rôle
 
-Extraction avancée basée sur un fichier Excel de mapping :
+Extraction avancée par scan des dossiers :
 
-- Lit un fichier Excel contenant les chemins des EDB et NDC
+- Scanne les dossiers `classified_docx/edb/` et `classified_docx/ndc/`
+- Identifie les fichiers par leur code RITM (`CAGIPRITMNNNNNNN`)
 - Convertit les DOCX en Markdown via **Mammoth** (meilleure qualité que python-docx)
 - Supprime automatiquement : page de garde, table des matières, préambule
 - Préserve : titres, paragraphes, listes, tableaux
 - **Parallélisé** avec ProcessPoolExecutor
 
-### Configuration
-
-Modifier les constantes en début de fichier :
-
-```python
-EXCEL_NAME = "couverture_EDB_NDC_par_RITM.xlsx"
-COL_EDB = 5  # Colonne F
-COL_NDC = 6  # Colonne G
-EXCEL_FILTERS = [(3, "OUI")]  # Filtre colonne D = "OUI"
-```
-
 ### Sorties
 
 ```
-dataset_markdown/
+markdown/
 ├── edb/
 ├── ndc/
-├── _logs/
-└── conversion_report.csv
+└── _logs/
 ```
 
 ### Exécution
 
 ```bash
 python extract_docx_to_markdown.py
+
+# Options
+python extract_docx_to_markdown.py --workers 4
+python extract_docx_to_markdown.py --edb-dir classified_docx/edb --ndc-dir classified_docx/ndc
 ```
 
 ---
@@ -385,7 +378,8 @@ python extract_docx_to_markdown.py
 
 Construit un dataset JSONL pour fine-tuning LLM (Mistral Instruct) :
 
-- Apparie les fichiers EDB et NDC par référence (ex: `CAGIPRITM123456`)
+- Scanne `markdown/edb/` et `markdown/ndc/`
+- Apparie les fichiers EDB et NDC par code RITM (`CAGIPRITMNNNNNNN` au début du nom)
 - Gère les cas multi-versions (plusieurs EDB/NDC pour une même référence)
 - Split train/val configurable (90/10 par défaut)
 - Format compatible Mistral Instruct / ChatML / Alpaca
@@ -455,7 +449,6 @@ python build_dataset_jsonl.py --report
 | Dédoublonnage | `dedupe_report.xlsx` | `datas/` | règles, décisions, justification |
 | Conversion | `convert_report.xlsx` | `datas/` | conversion/copied, logs |
 | Classification | `classify_report.xlsx` | `datas/` | EDB / NDC / AUTRES + destination |
-| Extraction | `conversion_report.csv` | `dataset_markdown/` | statut extraction DOCX → MD |
 
 ---
 

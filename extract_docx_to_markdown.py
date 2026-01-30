@@ -2,15 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 Conversion DOCX -> Markdown (dataset pour training LLM)
-- NDC (colonne G) + EDB (colonne F)
-- Filtre Excel configurable
-- Utilise Mammoth pour conversion DOCX (ignore headers/footers automatiquement)
-- Ignore page de garde, synthèse, table des matières
-- Préserve titres, paragraphes, listes, tableaux
-- Format Markdown homogène pour training
+- Scanne les dossiers EDB et NDC
+- Identifie les fichiers par leur code RITM (CAGIPRITMNNNNNNN)
+- Utilise Mammoth pour conversion DOCX (meilleure qualité)
+- Supprime page de garde, table des matières, préambule
+- Parallélisé avec ProcessPoolExecutor
 
 Dépendances:
-  pip install pandas openpyxl mammoth html2text
+  pip install mammoth html2text
 """
 
 from __future__ import annotations
@@ -19,11 +18,11 @@ import re
 import os
 import logging
 import traceback
+import argparse
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-import pandas as pd
 import mammoth
 import html2text
 
@@ -35,39 +34,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==============================================================================
-# CONFIGURATION - MODIFIEZ ICI
+# CONFIGURATION
 # ==============================================================================
 
-# Fichier Excel source
-EXCEL_NAME = "couverture_EDB_NDC_par_RITM.xlsx"
+# Dossiers source (DOCX classés)
+DEFAULT_EDB_DIR = "classified_docx/edb"
+DEFAULT_NDC_DIR = "classified_docx/ndc"
 
-# Colonnes contenant les chemins des fichiers (index 0-based: A=0, B=1, etc.)
-COL_EDB = 5  # Colonne F = index 5
-COL_NDC = 6  # Colonne G = index 6
-
-# ------------------------------
-# FILTRES EXCEL
-# ------------------------------
-EXCEL_FILTERS = [
-    (1, None),      # Colonne B (mettre None pour désactiver)
-    (2, None),      # Colonne C (mettre None pour désactiver)
-    (3, "OUI"),     # Colonne D = "OUI"
-    (4, None),      # Colonne E (mettre None pour désactiver)
-]
-
-# ------------------------------
-# Dossiers de sortie
-# ------------------------------
-OUTPUT_DIRNAME = "dataset_markdown"
+# Dossiers de sortie (Markdown)
+DEFAULT_OUTPUT_DIR = "markdown"
 LOG_DIRNAME = "_logs"
-SUBDIR_NDC = "ndc"
-SUBDIR_EDB = "edb"
 
-# ------------------------------
-# PARALLÉLISATION
-# ------------------------------
+# Pattern pour extraire le code RITM du nom de fichier
+# Format: CAGIPRITM suivi de chiffres (ex: CAGIPRITM0012345)
+RITM_PATTERN = r"^(CAGIPRITM\d+)"
+
 # Nombre de workers (0 = auto = nombre de CPU)
-MAX_WORKERS = 0
+DEFAULT_WORKERS = 0
 
 # Style mapping Mammoth : ignorer les styles de TOC et mapper les autres
 MAMMOTH_STYLE_MAP = """
@@ -99,19 +82,6 @@ p[style-name='No Spacing'] => p
 p[style-name='Body Text'] => p
 """
 
-# Patterns pour détecter le début du vrai contenu
-CHAPTER_START_PATTERNS = [
-    r'^#{1,2}\s+[IVXLCDM]+\.\s+',
-    r'^#{1,2}\s+[IVXLCDM]+\s+',
-    r'^#{1,2}\s+\d+\.\s+',
-    r'^#{1,2}\s+\d+\s+',
-    r'^#\s+Description\s+du\s+projet',
-    r'^#\s+Introduction',
-    r'^#\s+Contexte',
-    r'^#\s+Périmètre',
-    r'^#\s+Perimetre',
-]
-
 # Patterns pour détecter la fin du préambule/TOC
 TOC_END_MARKERS = [
     "Table des matières",
@@ -131,12 +101,43 @@ CLEANUP_PATTERNS = [
 ]
 
 
-# ------------------------------
-# Conversion DOCX -> Markdown
-# ------------------------------
+# ==============================================================================
+# EXTRACTION CODE RITM
+# ==============================================================================
+
+def extract_ritm(filename: str) -> Optional[str]:
+    """Extrait le code RITM du nom de fichier."""
+    match = re.match(RITM_PATTERN, filename, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def scan_docx_files(directory: Path) -> List[Tuple[Path, str]]:
+    """
+    Scanne un dossier pour trouver les fichiers DOCX avec un code RITM.
+    Retourne une liste de (chemin, code_ritm).
+    """
+    results = []
+    if not directory.exists():
+        return results
+
+    for docx_path in directory.glob("*.docx"):
+        ritm = extract_ritm(docx_path.name)
+        if ritm:
+            results.append((docx_path, ritm))
+        else:
+            logger.warning(f"Pas de code RITM détecté: {docx_path.name}")
+
+    return results
+
+
+# ==============================================================================
+# CONVERSION DOCX -> MARKDOWN
+# ==============================================================================
+
 def clean_html_toc(html: str) -> str:
     """Supprime les éléments de TOC du HTML."""
-    # Supprimer les paragraphes contenant des liens TOC
     html = re.sub(
         r'<p[^>]*>\s*<a\s+href="#_Toc[^"]*"[^>]*>.*?</a>\s*</p>',
         '',
@@ -144,7 +145,6 @@ def clean_html_toc(html: str) -> str:
         flags=re.DOTALL | re.IGNORECASE
     )
 
-    # Supprimer les liens TOC restants
     html = re.sub(
         r'<a\s+href="#_Toc[^"]*"[^>]*>(.*?)</a>',
         r'\1',
@@ -152,7 +152,6 @@ def clean_html_toc(html: str) -> str:
         flags=re.DOTALL | re.IGNORECASE
     )
 
-    # Nettoyer les H1 qui contiennent "Table des matières"
     def fix_toc_h1(match):
         content = match.group(1)
         toc_patterns = [
@@ -170,8 +169,6 @@ def clean_html_toc(html: str) -> str:
         return match.group(0)
 
     html = re.sub(r'<h1[^>]*>(.*?)</h1>', fix_toc_h1, html, flags=re.DOTALL | re.IGNORECASE)
-
-    # Supprimer les ancres TOC restantes
     html = re.sub(r'<a\s+id="_Toc[^"]*"[^>]*>\s*</a>', '', html, flags=re.IGNORECASE)
 
     return html
@@ -256,7 +253,6 @@ def find_content_start(lines: List[str]) -> int:
 
         return content_lines >= 1
 
-    # Chercher après un marqueur de TOC explicite
     toc_found = False
     toc_end_index = 0
 
@@ -276,7 +272,6 @@ def find_content_start(lines: List[str]) -> int:
             if is_chapter_heading(line) and has_content_after(i):
                 return i
 
-    # Détecter la fin de la TOC
     consecutive_titles = 0
     last_title_idx = -1
 
@@ -297,7 +292,6 @@ def find_content_start(lines: List[str]) -> int:
                         return j
             consecutive_titles = 0
 
-    # Fallback
     for i, line in enumerate(lines):
         line_stripped = line.strip()
         if is_chapter_heading(line_stripped) and has_content_after(i):
@@ -467,140 +461,94 @@ def final_cleanup(content: str) -> str:
     return '\n'.join(cleaned_lines)
 
 
-# ------------------------------
-# Chargement Excel
-# ------------------------------
-def load_targets_from_excel(excel_path: Path) -> Tuple[List[str], List[str]]:
-    """Charge les fichiers à traiter depuis Excel en appliquant les filtres configurés."""
-    df = pd.read_excel(excel_path, engine="openpyxl")
+# ==============================================================================
+# TRAITEMENT PARALLÈLE
+# ==============================================================================
 
-    mask = pd.Series([True] * len(df))
-
-    for col_idx, expected_value in EXCEL_FILTERS:
-        if expected_value is None:
-            continue
-
-        col_data = df.iloc[:, col_idx]
-
-        if isinstance(expected_value, str):
-            col_normalized = col_data.astype(str).str.strip().str.upper()
-            expected_normalized = expected_value.strip().upper()
-            mask = mask & (col_normalized == expected_normalized)
-        else:
-            mask = mask & (col_data == expected_value)
-
-    edb_col = df.iloc[:, COL_EDB]
-    ndc_col = df.iloc[:, COL_NDC]
-
-    edb = edb_col[mask].dropna().astype(str).tolist()
-    ndc = ndc_col[mask].dropna().astype(str).tolist()
-
-    def clean(lst):
-        result = []
-        for cell in lst:
-            cell = cell.strip()
-            if not cell:
-                continue
-
-            parts = cell.split('|')
-            for part in parts:
-                part = part.strip().strip('"').strip("'")
-                if part and part.lower() not in ('nan', 'none', ''):
-                    result.append(part)
-
-        return result
-
-    active_filters = [(col, val) for col, val in EXCEL_FILTERS if val is not None]
-    if active_filters:
-        filter_desc = ", ".join([f"col{col}={val}" for col, val in active_filters])
-        logger.info(f"Filtres appliqués: {filter_desc}")
-    else:
-        logger.info("Aucun filtre appliqué (tous les fichiers seront traités)")
-
-    return clean(ndc), clean(edb)
-
-
-# ------------------------------
-# Traitement d'un fichier (pour parallélisation)
-# ------------------------------
-def process_single_file(args: Tuple[str, str, Path, Path, Path]) -> Tuple[str, str, str, str, str, str]:
+def process_single_file(args: Tuple[str, str, str, str, str]) -> Tuple[str, str, str, str, str, str, str]:
     """
     Traite un seul fichier DOCX -> Markdown.
-    Retourne un tuple pour le rapport.
+    Retourne (mode, ritm, filename, src, out_path, status, error).
     """
-    name, mode, cwd, out_dir, log_dir = args
-
-    src = cwd / name
-    ext = src.suffix.lower()
-
-    if not ext:
-        src = src.with_suffix(".docx")
-    elif ext != ".docx":
-        src = src.with_suffix(".docx")
-
-    if not src.exists():
-        return (mode, name, str(src), "", "MISSING", "Fichier introuvable")
+    src_path, ritm, mode, out_dir, log_dir = args
+    src_path = Path(src_path)
+    out_dir = Path(out_dir)
+    log_dir = Path(log_dir)
 
     try:
-        md_content = docx_to_markdown(src)
+        md_content = docx_to_markdown(src_path)
 
-        out_name = Path(name).stem + ".md"
+        out_name = src_path.stem + ".md"
         out_path = out_dir / out_name
         out_path.write_text(md_content, encoding="utf-8")
 
-        return (mode, name, str(src), str(out_path), "OK", "")
+        return (mode, ritm, src_path.name, str(src_path), str(out_path), "OK", "")
 
     except Exception as ex:
         err_msg = f"{type(ex).__name__}: {ex}"
 
         trace = traceback.format_exc()
-        log_file = log_dir / (Path(name).stem + f".{mode}.error.log")
+        log_file = log_dir / (src_path.stem + f".{mode}.error.log")
         log_file.write_text(trace, encoding="utf-8")
 
-        return (mode, name, str(src), "", "ERROR", err_msg)
+        return (mode, ritm, src_path.name, str(src_path), "", "ERROR", err_msg)
 
 
-# ------------------------------
-# Programme principal
-# ------------------------------
+# ==============================================================================
+# PROGRAMME PRINCIPAL
+# ==============================================================================
+
 def main() -> int:
-    cwd = Path(".").resolve()
-    excel_path = cwd / EXCEL_NAME
+    parser = argparse.ArgumentParser(
+        description="Convertit les DOCX en Markdown en scannant les dossiers EDB/NDC par code RITM."
+    )
+    parser.add_argument("--edb-dir", type=str, default=DEFAULT_EDB_DIR,
+                        help=f"Dossier des EDB (défaut: {DEFAULT_EDB_DIR})")
+    parser.add_argument("--ndc-dir", type=str, default=DEFAULT_NDC_DIR,
+                        help=f"Dossier des NDC (défaut: {DEFAULT_NDC_DIR})")
+    parser.add_argument("--output-dir", type=str, default=DEFAULT_OUTPUT_DIR,
+                        help=f"Dossier de sortie (défaut: {DEFAULT_OUTPUT_DIR})")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="Nombre de workers (défaut: 0 = auto)")
+    args = parser.parse_args()
 
-    base_out = cwd / OUTPUT_DIRNAME
-    log_dir = base_out / LOG_DIRNAME
-    out_ndc = base_out / SUBDIR_NDC
-    out_edb = base_out / SUBDIR_EDB
+    edb_dir = Path(args.edb_dir).resolve()
+    ndc_dir = Path(args.ndc_dir).resolve()
+    output_dir = Path(args.output_dir).resolve()
 
-    for d in [base_out, log_dir, out_ndc, out_edb]:
+    out_edb = output_dir / "edb"
+    out_ndc = output_dir / "ndc"
+    log_dir = output_dir / LOG_DIRNAME
+
+    for d in [out_edb, out_ndc, log_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    if not excel_path.exists():
-        logger.error(f"Fichier Excel introuvable: {excel_path}")
-        return 2
+    # Scanner les dossiers
+    logger.info(f"Scan EDB: {edb_dir}")
+    edb_files = scan_docx_files(edb_dir)
+    logger.info(f"  -> {len(edb_files)} fichiers avec code RITM")
 
-    ndc_list, edb_list = load_targets_from_excel(excel_path)
+    logger.info(f"Scan NDC: {ndc_dir}")
+    ndc_files = scan_docx_files(ndc_dir)
+    logger.info(f"  -> {len(ndc_files)} fichiers avec code RITM")
 
-    logger.info(f"Fichiers NDC: {len(ndc_list)}")
-    logger.info(f"Fichiers EDB: {len(edb_list)}")
-
-    if not ndc_list and not edb_list:
+    if not edb_files and not ndc_files:
         logger.info("Aucun fichier à traiter.")
         return 0
 
     # Préparer les tâches
     tasks = []
-    for f in ndc_list:
-        tasks.append((f, "ndc", cwd, out_ndc, log_dir))
-    for f in edb_list:
-        tasks.append((f, "edb", cwd, out_edb, log_dir))
+    for path, ritm in edb_files:
+        tasks.append((str(path), ritm, "edb", str(out_edb), str(log_dir)))
+    for path, ritm in ndc_files:
+        tasks.append((str(path), ritm, "ndc", str(out_ndc), str(log_dir)))
 
     total = len(tasks)
-    workers = MAX_WORKERS if MAX_WORKERS > 0 else os.cpu_count()
+    workers = args.workers if args.workers > 0 else os.cpu_count()
     logger.info(f"Traitement de {total} fichiers avec {workers} workers...")
 
-    report_rows = []
-    stats = {"ok": 0, "error": 0, "missing": 0}
+    stats = {"ok": 0, "error": 0}
+    results = []
 
     # Traitement parallèle
     with ProcessPoolExecutor(max_workers=workers) as executor:
@@ -608,32 +556,31 @@ def main() -> int:
 
         for i, future in enumerate(as_completed(futures), 1):
             result = future.result()
-            mode, name, src, out_path, status, error = result
-            report_rows.append(result)
+            mode, ritm, filename, src, out_path, status, error = result
+            results.append(result)
 
             if status == "OK":
                 stats["ok"] += 1
-                logger.info(f"[{i}/{total}] OK ({mode}) {Path(name).name}")
-            elif status == "MISSING":
-                stats["missing"] += 1
-                logger.warning(f"[{i}/{total}] MISSING ({mode}) {name}")
+                logger.info(f"[{i}/{total}] OK ({mode}) {ritm} - {filename}")
             else:
                 stats["error"] += 1
-                logger.error(f"[{i}/{total}] ERROR ({mode}) {name}: {error}")
+                logger.error(f"[{i}/{total}] ERROR ({mode}) {ritm} - {filename}: {error}")
 
-    report_df = pd.DataFrame(
-        report_rows,
-        columns=["type", "source_excel", "input_path", "output_md", "status", "error"]
-    )
-    report_path = base_out / "conversion_report.csv"
-    report_df.to_csv(report_path, index=False, encoding="utf-8")
-
+    # Résumé
     logger.info("")
     logger.info("=== Résumé ===")
     logger.info(f"OK: {stats['ok']}")
-    logger.info(f"Manquants: {stats['missing']}")
     logger.info(f"Erreurs: {stats['error']}")
-    logger.info(f"Rapport: {report_path}")
+    logger.info(f"Sortie: {output_dir}")
+
+    # Afficher les codes RITM trouvés
+    edb_ritms = set(ritm for _, ritm in edb_files)
+    ndc_ritms = set(ritm for _, ritm in ndc_files)
+    common_ritms = edb_ritms & ndc_ritms
+
+    logger.info(f"Codes RITM EDB: {len(edb_ritms)}")
+    logger.info(f"Codes RITM NDC: {len(ndc_ritms)}")
+    logger.info(f"Codes RITM communs: {len(common_ritms)}")
 
     return 0 if stats["error"] == 0 else 1
 

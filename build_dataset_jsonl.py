@@ -99,7 +99,8 @@ REQUIRE_CONTENT_PATTERNS = []
 # ------------------------------
 # FILTRES NOM DE FICHIER
 # ------------------------------
-REF_FROM_FILENAME_PATTERN = r"^(CAGIPRITM\d+)\s*[-–—_]\s*.*$"
+# Pattern: CAGIPRITM suivi de chiffres, puis n'importe quoi (ou rien)
+REF_FROM_FILENAME_PATTERN = r"^(CAGIPRITM\d+)"
 
 EXCLUDE_FILENAME_PATTERNS = [
     r'^\..*',
