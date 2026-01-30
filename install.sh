@@ -101,6 +101,7 @@ fi
 # 11) FIN – TERMINAL PRÊT DANS LE BON DOSSIER + BON CONDA
 ############################################################
 cd "$SCRIPT_DIR"
+mkdir raw
 
 echo
 echo "============================================================"
