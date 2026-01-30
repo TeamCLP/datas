@@ -22,16 +22,16 @@ export NO_PROXY="$NO_PROXY_LIST"
 
 echo "=== Configuration des proxies APT ==="
 echo -e "Acquire::http::Proxy \"${HTTP_PROXY_URL}\";\nAcquire::https::Proxy \"${HTTPS_PROXY_URL}\";" \
-  | sudo tee /etc/apt/apt.conf.d/95proxies
+  | tee /etc/apt/apt.conf.d/95proxies
 
 echo "=== Mise à jour APT ==="
-sudo apt-get update -y
+apt-get update -y
 
 echo "=== Installation LibreOffice ==="
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libreoffice
+DEBIAN_FRONTEND=noninteractive apt-get install -y libreoffice
 
 echo "=== Installation outils requis (wget, bzip2) ==="
-sudo apt-get install -y wget bzip2
+apt-get install -y wget bzip2
 
 ### --- TELECHARGEMENT MINICONDA ---
 echo "=== Téléchargement Miniconda via proxy ==="
@@ -40,7 +40,7 @@ wget -O /tmp/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-
       -O /tmp/miniconda.sh https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
 
 echo "=== Installation Miniconda dans /opt/miniconda ==="
-sudo bash /tmp/miniconda.sh -b -p /opt/miniconda
+bash /tmp/miniconda.sh -b -p /opt/miniconda
 
 ### --- CHARGEMENT CONDA ---
 echo "=== Ajout conda au PATH ==="
