@@ -1,63 +1,152 @@
-# 📄 Pipeline documentaire – Nettoyage • Dédoublonnage • Conversion DOC→DOCX
+# 📄 Pipeline documentaire – Nettoyage • Dédoublonnage • Conversion • Classification • Export Markdown
 
-Ce dépôt contient un pipeline complet permettant de transformer un lot de documents bruts en un ensemble propre, dédoublonné, homogène et converti au format DOCX.  
-Il repose sur **trois scripts Python** travaillant de manière séquentielle :
+## 🧩 Schéma global du pipeline (ASCII)
 
-1. `clean_extension.py` → Nettoyage & filtrage des extensions  
-2. `dedupe.py` → Dédoublonnage intelligent (Word > PDF)  
-3. `convert_to_docx.py` → Conversion DOC→DOCX, PDF→DOCX + copie des DOCX
+```
+                 ┌────────────────────┐
+                 │    raw/ (brut)     │
+                 └─────────┬──────────┘
+                           │
+                           ▼
+            ┌────────────────────────────────┐
+            │ 1) clean_extension.py          │
+            │ - Filtrage extensions          │
+            │ - Suffixes anti‑collision      │
+            └───────────┬────────────────────┘
+                        │
+                        ▼
+          ┌────────────────────────────────────┐
+          │ clean_extension/                    │
+          └──────────────────┬──────────────────┘
+                             │
+                             ▼
+            ┌────────────────────────────────┐
+            │ 2) dedupe.py                   │
+            │ - Règles DOC/DOCX/PDF          │
+            │ - Sélection fichier le + récent│
+            └───────────┬────────────────────┘
+                        │
+                        ▼
+               ┌────────────────────────┐
+               │       dedupe/          │
+               └──────────┬─────────────┘
+                          │
+                          ▼
+        ┌────────────────────────────────────────┐
+        │ 3) convert_to_docx.py                  │
+        │ - DOC → DOCX (LibreOffice)             │
+        │ - PDF → DOCX (pdf2docx)                │
+        │ - Copie des DOCX                       │
+        └────────────────┬───────────────────────┘
+                         │
+                         ▼
+                   ┌───────────┐
+                   │   docx/   │
+                   └─────┬─────┘
+                         │
+                         ▼
+       ┌────────────────────────────────────────────┐
+       │ 4) classify_docx.py                        │
+       │ - Analyse 1ère page                        │
+       │ - Détection EDB / NDC / AUTRES             │
+       └────────────────┬───────────────────────────┘
+                        │
+                        ▼
+         ┌──────────────────────────────────────────────┐
+         │ classified_docx/                              │
+         │   ├── edb/                                   │
+         │   ├── ndc/                                   │
+         │   └── autres/                                │
+         └───────────────────────┬──────────────────────┘
+                                 │
+                                 ▼
+      ┌────────────────────────────────────────────────────┐
+      │ 5) convert_classified_to_md.py                     │
+      │ - DOCX → Markdown                                  │
+      │ - Export EDB & NDC                                 │
+      └───────────────────┬────────────────────────────────┘
+                          │
+                          ▼
+         ┌──────────────────────────────────────────┐
+         │ markdown/                                 │
+         │   ├── edb/                                │
+         │   └── ndc/                                │
+         └──────────────────────────────────────────┘
+```
 
-L’objectif final est d’obtenir un corpus documentaire propre, cohérent et normalisé.
+---
+
+# 📘 Description générale
+
+Ce dépôt contient un pipeline complet permettant de transformer un lot de documents bruts en un ensemble :
+
+- propre  
+- dédoublonné  
+- homogène  
+- converti au format DOCX  
+- classé automatiquement (NDC / EDB / AUTRES)  
+- exporté en Markdown  
+
+Il repose sur **cinq scripts Python**, exécutés dans cet ordre :
+
+1. `clean_extension.py`  
+2. `dedupe.py`  
+3. `convert_to_docx.py`  
+4. `classify_docx.py`  
+5. `convert_classified_to_md.py`  
 
 ---
 
 # 🚀 Exécution depuis un Pod JupyterLab (template *scribe*)
 
-## ✔️ Instructions exactes à suivre
+## ✔️ Instructions exactes
 
 ### **1) Créer un Pod**
-- Utiliser le **template scribe**
-- **Ne pas allouer de GPU**
+
+- Template : **scribe**
+- **Sans GPU**
 - Ouvrir JupyterLab
 - Ouvrir un Terminal
 
 ### **2) Installer l’environnement**
-Dans le terminal JupyterLab :
 
 ```bash
 bash
 git clone https://github.com/TeamCLP/datas.git /home/datas && source /home/datas/install.sh
 ```
 
-> Le script `install.sh` configure automatiquement :  
-> - Proxy  
-> - LibreOffice  
-> - Miniconda + Python 3.13  
-> - Environnement conda `pipeline`  
-> - Installation du `requirements.txt`  
-> - Activation automatique du venv  
-> - Positionnement dans `/home/datas`
+Le script `install.sh` configure automatiquement :
+
+- Proxy  
+- LibreOffice  
+- Miniconda + Python 3.13  
+- Environnement `pipeline`  
+- Installation du `requirements.txt`  
+- Activation du venv  
+- Positionnement dans `/home/datas`
 
 ### **3) Déposer les données sources**
-Déposer `raw_datas.tar` dans :
+
+Placer `raw_datas.tar` ici :
 
 ```
 /home/datas
 ```
 
-Puis exécuter :
+Puis extraire :
 
 ```bash
 mkdir raw && tar -xvf raw_datas.tar -C raw/
 ```
 
-### **4) Lancer le pipeline**
-Toujours depuis `/home/datas` avec conda actif :
+### **4) Lancer le pipeline complet**
 
 ```bash
 python clean_extension.py
 python dedupe.py
 python convert_to_docx.py
+python classify_docx.py
+python convert_classified_to_md.py
 ```
 
 ---
@@ -68,230 +157,158 @@ Après exécution :
 
 ```
 datas/
-├── raw/                   # Contenu brut extrait
-├── clean_extension/       # Fichiers filtrés + Excel de traçabilité
-├── dedupe/                # Fichiers dédoublonnés + Excel de traçabilité
-├── docx/                  # Fichiers convertis + copies + Excel
-│
+├── raw/                   
+├── clean_extension/       
+├── dedupe/                
+├── docx/                  
+├── classified_docx/
+│   ├── edb/
+│   ├── ndc/
+│   └── autres/
+├── markdown/
+│   ├── edb/
+│   └── ndc/
 ├── clean_extension.py
 ├── dedupe.py
 ├── convert_to_docx.py
+├── classify_docx.py
+├── convert_classified_to_md.py
 └── README.md
 ```
 
 ---
 
-# ⚙️ 1. Préparation de l’environnement (si exécution hors Pod)
-
-### Installer Python et LibreOffice
-
-```bash
-echo -e 'Acquire::http::Proxy "http://10.246.42.30:8080";\nAcquire::https::Proxy "http://10.246.42.30:8080";' > /etc/apt/apt.conf.d/95proxies
-apt update
-apt-get install -y python3 python3-pip
-apt-get install -y libreoffice
-soffice --version
-```
-
-### Installer les dépendances Python
-
-```bash
-pip install pandas openpyxl pdf2docx
-```
-
----
-
-# 📥 2. Récupération du dépôt & préparation des données
-
-Cloner le repo :
-
-```bash
-git clone https://github.com/TeamCLP/datas.git
-cd datas
-```
-
-Déposer `raw_datas.tar` dans ce dossier, puis :
-
-```bash
-mkdir raw
-tar -xvf raw_datas.tar -C raw/
-```
-
-Vous obtenez :
-
-```
-datas/
-└── raw/
-    ├── fichier1.pdf
-    ├── fichier2.doc
-    ├── fichier3.docx
-    └── ...
-```
-
----
-
-# 🚀 3. Étape 1 — Nettoyage des extensions  
+# ⚙️ 1. Étape 1 — Nettoyage des extensions  
 **Script : `clean_extension.py`**
 
 ### Rôle
 
-- Parcourt le dossier `raw/`
-- Ne conserve que :
-  - `.pdf`
-  - `.doc`
-  - `.docx`
-- Ajoute un suffixe anti-collision `_YYYYMMDD_HHMMSS` si nécessaire
-- Produit un rapport Excel : **`inventaire_raw.xlsx`**
-- Remplit le dossier `clean_extension/`
+- Parcourt `raw/`
+- Ne conserve que : `.pdf`, `.doc`, `.docx`
+- Ajoute un suffixe `_YYYYMMDD_HHMMSS` en cas de collision
+- Produit : `inventaire_raw.xlsx`
+- Remplit : `clean_extension/`
 
 ### Exécution
 
 ```bash
-python3 clean_extension.py
-```
-
-Sorties :
-
-```
-clean_extension/
-inventaire_raw.xlsx
+python clean_extension.py
 ```
 
 ---
 
-# 🧹 4. Étape 2 — Dédoublonnage intelligent  
+# 🧹 2. Étape 2 — Dédoublonnage intelligent  
 **Script : `dedupe.py`**
 
-### Règles métier appliquées (par nom de base, suffixe horodaté neutralisé)
+### Règles métier
 
-| Cas | Ce qu’on garde |
-|-----|----------------|
-| `.docx` présent | le `.docx` **le plus récent** |
-| `.doc` sans `.docx` | le `.doc` **le plus récent** |
-| uniquement PDF | le PDF **le plus récent** |
+| Cas | Conserver |
+|-----|-----------|
+| `.docx` présent | `.docx` le plus récent |
+| `.doc` sans `.docx` | `.doc` le plus récent |
+| seulement PDF | PDF le plus récent |
 
-Tous les autres fichiers du groupe → **ignorés**.
+### Sorties
 
-### Fonctionnalités
-
-- Génère un rapport Excel **avant copie** : `dedupe_report.xlsx`
-- Explique pour chaque fichier :
-  - Action (conserver / ignorer)
-  - Raison
-  - Chemins source & destination
-- Copie les fichiers “conserver” dans : **`dedupe/`**
+- répertoire : `dedupe/`
+- rapport : `dedupe_report.xlsx`
 
 ### Exécution
 
 ```bash
-python3 dedupe.py
-```
-
-Mode simulation (sans copier) :
-
-```bash
-python3 dedupe.py --dry-run
-```
-
-Sorties :
-
-```
-dedupe/
-dedupe_report.xlsx
+python dedupe.py
 ```
 
 ---
 
-# 🔁 5. Étape 3 — Conversion DOC→DOCX, PDF→DOCX & copie des DOCX  
+# 🔁 3. Étape 3 — Conversion DOC→DOCX & PDF→DOCX  
 **Script : `convert_to_docx.py`**
 
-## Rôle
+### Rôle
 
-Ce script traite **trois types d’entrées** depuis `dedupe/` :
+- Conversion `.doc` via LibreOffice  
+- Conversion `.pdf` via `pdf2docx`  
+- Copie des `.docx` existants  
+- Output : `docx/`
+- Rapport : `convert_report.xlsx`
 
-1. **`.doc` → `.docx`** via LibreOffice (`soffice`)  
-2. **`.pdf` → `.docx`** via la librairie **pdf2docx**  
-3. **`.docx` → copie directe**  
+### Options
 
-Tous les fichiers sont déposés dans :
+- `--on-exists skip` (défaut)  
+- `--on-exists overwrite`  
+- `--on-exists suffix`  
 
-```
-docx/
-```
-
-Un rapport unique assure la traçabilité :
-
-```
-convert_report.xlsx
-```
-
----
-
-## Règles appliquées aux PDF
-
-- Tous les `.pdf` présents dans `dedupe/` sont convertis en `.docx`
-- Conversion réalisée via **pdf2docx**
-- Gestion des collisions via `--on-exists` :
-
-| Option         | Comportement PDF → DOCX |
-|----------------|--------------------------|
-| `skip`         | ignore si le `.docx` existe déjà |
-| `overwrite`    | remplace le `.docx` existant |
-| `suffix`       | crée `nom_YYYYMMDD_HHMMSS.docx` |
-
----
-
-## Dépendances PDF
-
-La conversion PDF nécessite :
-
-```
-pdf2docx
-```
-
-Ce package est installé automatiquement via `requirements.txt`.
-
----
-
-## Exécution
+### Exécution
 
 ```bash
-python3 convert_to_docx.py
-```
-
-Exemples :
-
-```bash
-python3 convert_to_docx.py --on-exists overwrite
-python3 convert_to_docx.py --on-exists suffix
-python3 convert_to_docx.py --soffice /usr/bin/soffice
-```
-
-Sorties :
-
-```
-docx/
-convert_report.xlsx
+python convert_to_docx.py
 ```
 
 ---
 
-## Récapitulatif des conversions gérées
+# 🔎 4. Étape 4 — Classification des DOCX  
+**Script : `classify_docx.py`**
 
-| Format d'entrée | Traitement | Méthode | Sortie |
-|------------------|------------|----------|---------|
-| `.doc`           | Converti   | LibreOffice (soffice) | `.docx` |
-| `.pdf`           | Converti   | pdf2docx | `.docx` |
-| `.docx`          | Copié tel quel | — | `.docx` |
+### Rôle
+
+Analyse de la **première page** :
+
+- **EDB** : contient « expression de besoin »  
+- **NDC** : motif `CAPS_YYYY-NNN`  
+- **AUTRES** : aucune correspondance  
+
+### Sorties
+
+```
+classified_docx/
+    edb/
+    ndc/
+    autres/
+```
+
+### Rapport
+
+```
+docx/classify_report.xlsx
+```
+
+### Exécution
+
+```bash
+python classify_docx.py
+```
+
+---
+
+# ✍️ 5. Étape 5 — Export Markdown  
+**Script : `convert_classified_to_md.py`**
+
+### Rôle
+
+- Convertit en Markdown tous les fichiers de :
+  - `classified_docx/ndc/`
+  - `classified_docx/edb/`
+
+- Dépose les `.md` dans :
+  - `markdown/ndc/`
+  - `markdown/edb/`
+
+### Exécution
+
+```bash
+python convert_classified_to_md.py
+```
 
 ---
 
 # 🧭 6. Pipeline complet (ordre recommandé)
 
 ```bash
-python3 clean_extension.py
-python3 dedupe.py
-python3 convert_to_docx.py
+python clean_extension.py
+python dedupe.py
+python convert_to_docx.py
+python classify_docx.py
+python convert_classified_to_md.py
 ```
 
 ---
@@ -299,20 +316,20 @@ python3 convert_to_docx.py
 # 📊 7. Fichiers Excel générés
 
 | Étape | Fichier | Contenu |
-|-------|---------|----------|
-| Nettoyage | `inventaire_raw.xlsx` | action appliquée à chaque fichier brut |
-| Dédoublonnage | `dedupe_report.xlsx` | décision, raison, chemin source/destination |
-| Conversion | `convert_report.xlsx` | action (converti/copied/ignored), message, fichier généré |
+|-------|---------|---------|
+| Nettoyage | `inventaire_raw.xlsx` | inventaire et actions appliquées |
+| Dédoublonnage | `dedupe_report.xlsx` | règles, décisions, justification |
+| Conversion | `convert_report.xlsx` | conversion/copied, logs |
+| Classification | `classify_report.xlsx` | EDB / NDC / AUTRES + destination |
 
 ---
 
 # ⭐ Bonnes pratiques
 
-- Toujours exécuter le pipeline **dans l’ordre** : Clean → Dedupe → Convert  
-- Ne jamais modifier manuellement `clean_extension/` ou `dedupe/`  
-- Laisser l’option `--on-exists skip` sauf besoin explicite  
-- Les suffixes anti-collision garantissent **aucune perte de fichier**  
-- Chaque étape laisse une **traçabilité complète en Excel**
+- Toujours suivre le pipeline dans l’ordre  
+- Ne jamais modifier manuellement les dossiers intermédiaires  
+- Conserver `--on-exists skip` sauf besoin explicite  
+- Utiliser les rapports Excel pour audit et contrôle  
 
 ---
 
@@ -320,9 +337,11 @@ python3 convert_to_docx.py
 
 À la fin du pipeline :
 
-- Tous les fichiers non pertinents ont été exclus  
-- Les doublons sont résolus selon les règles métier  
-- Tous les documents sont au même format `.docx`  
-- Vous disposez d’une traçabilité complète pour audit ou archivage  
+- Fichiers nettoyés  
+- Doublons supprimés  
+- Corpus converti à 100% en `.docx`  
+- Documents automatiquement classés  
+- Export Markdown propre et structuré  
+- Traçabilité complète  
 
 Le pipeline produit un corpus documentaire propre, homogène et exploitable immédiatement.
