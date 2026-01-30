@@ -136,7 +136,7 @@ Placer `raw_datas.tar` ici :
 Puis extraire :
 
 ```bash
-mkdir raw && tar -xvf raw_datas.tar -C raw/
+tar -xvf raw_datas.tar -C raw/
 ```
 
 ### **4) Lancer le pipeline complet**
