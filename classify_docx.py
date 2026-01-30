@@ -2,57 +2,68 @@
 # -*- coding: utf-8 -*-
 
 """
-Classification des DOCX (première page) en EDB / NDC / AUTRES.
+Classification des DOCX (première page + nom de fichier) en EDB / NDC / AUTRES.
 
 Règles :
-- EDB si "expression de besoin" est présent (insensible casse/accents)
-- NDC si motif "CAPS_YYYY-NNN" (e.g. CAPS_2020-132) détecté
+- EDB si l'une des expressions (insensible casse/accents) est présente dans la première page :
+    • "expression de besoin"
+    • "expression de besoins"
+    • "expressions de besoins"
+- NDC si un motif code client est détecté (prioritaire sur EDB), au choix :
+    • dans la première page
+    • dans le nom du fichier (avec extension)
+  Motif accepté : CAPS[-_]YYYY[-_]NNN (ex : CAPS_2020-132, CAPS-2020_132, CAPS_2020_132)
+  (client fixé à "CAPS", année = 4 chiffres, numéro = >= 1 chiffre)
+
 - AUTRES sinon
 
-Copie des fichiers vers :
-  classified_docx/
-    ├─ edb/
-    ├─ ndc/
-    └─ autres/
+Copies :
+- Les fichiers sont copiés selon la classe dans :
+    classified_docx/
+      ├─ edb/
+      ├─ ndc/
+      └─ autres/
 
-Génère un Excel récapitulatif : classified_docx/classify_report.xlsx
+Traçabilité :
+- Un rapport Excel est généré dans le dossier d'entrée (ex : docx/classify_report.xlsx).
 
-Limitations/choix techniques :
-- La "première page" est considérée comme le contenu jusqu'au **premier saut de page explicite**
-  s'il existe. À défaut, on tronque aux N premiers caractères (paramétrable).
+CLI :
+- --docx-dir : dossier d'entrée (défaut: docx)
+- --output-dir : dossier racine de sortie (défaut: classified_docx)
+- --on-exists : skip | overwrite | suffix (défaut: skip)
+- --recursive : parcourir récursivement le dossier d'entrée
+- --first-page-char-limit : troncature si pas de saut de page explicite (défaut: 5000)
 """
 
 import argparse
-import os
-import re
-import shutil
 from datetime import datetime
 from pathlib import Path
+import re
+import shutil
 import unicodedata
 
 import pandas as pd
 from docx import Document
 from docx.oxml.ns import qn
 
+
 # ---------- Configuration par défaut ----------
 DEFAULT_INPUT_DIR = "docx"
-DEFAULT_OUTPUT_DIR = "classified_docx"  # <— renommé
-DEFAULT_ON_EXISTS = "skip"              # skip | overwrite | suffix
+DEFAULT_OUTPUT_DIR = "classified_docx"
+DEFAULT_ON_EXISTS = "skip"      # skip | overwrite | suffix
 DEFAULT_FIRST_PAGE_CHAR_LIMIT = 5000
 
 
 # ---------- Utilitaires ----------
 def strip_accents(s: str) -> str:
-    """Supprime les accents pour une comparaison diacritics-insensitive."""
+    """Supprime les accents pour comparaison diacritics-insensitive."""
     if s is None:
         return ""
     return "".join(c for c in unicodedata.normalize("NFD", s) if not unicodedata.combining(c))
 
 
 def paragraph_has_page_break(p) -> bool:
-    """
-    Détecte un saut de page explicite (<w:br w:type="page"/>) dans un paragraphe DOCX.
-    """
+    """Détecte un saut de page explicite (<w:br w:type="page"/>) dans un paragraphe DOCX."""
     for br in p._element.xpath(".//w:br"):
         br_type = br.get(qn("w:type"))
         if (br_type or "").lower() == "page":
@@ -113,33 +124,67 @@ def safe_copy(src: Path, dst_dir: Path, on_exists: str):
 
 
 # ---------- Détection métier ----------
-EDB_TOKEN = "expression de besoin"
-NDC_REGEX = re.compile(r"\bCAPS_\d{4}-\d+\b")  # e.g. CAPS_2020-132 (client CAPS)
+# Variantes EDB (insensibles aux accents/majuscules)
+EDB_TOKENS = [
+    "expression de besoin",
+    "expression de besoins",
+    "expressions de besoins",
+]
 
-def classify_first_page(text: str) -> tuple[str, str]:
-    """
-    Retourne (classe, raison).
-    Priorité NDC > EDB, puis AUTRES.
-    - EDB: recherche insensible aux accents/majuscules.
-    - NDC: motif CAPS_YYYY-NNN (sensible au motif, non accentué).
-    """
-    # Pour EDB : normalisation casse + accents
+# NDC : autoriser '-' ou '_' entre les segments
+# CAPS[-_]YYYY[-_]NNN  (insensible à la casse)
+NDC_REGEX = re.compile(r"\bCAPS[-_]\d{4}[-_]\d+\b", flags=re.IGNORECASE)
+
+
+def detect_edb(text: str) -> tuple[bool, str]:
+    """Détection EDB dans la première page (insensible accents/casse)."""
     norm_text = strip_accents(text).lower()
-    is_edb = EDB_TOKEN in norm_text  # token est déjà en minuscules sans accents
+    for token in EDB_TOKENS:
+        if token in norm_text:
+            return True, f"contains:'{token}'"
+    return False, ""
 
-    # Pour NDC : motif structuré
-    ndc_match = NDC_REGEX.search(text)
 
-    if ndc_match:
-        return "NDC", f"pattern:{ndc_match.group(0)}"
+def detect_ndc_in_text_or_filename(text: str, filename: str) -> tuple[bool, str]:
+    """
+    Détection NDC dans la première page OU le nom de fichier.
+    Renvoie (is_ndc, reason) avec la source et le motif trouvé.
+    """
+    # Cherche dans le texte de la première page (cas-insensitive via regex)
+    m_text = NDC_REGEX.search(text or "")
+    if m_text:
+        return True, f"pattern:{m_text.group(0)} source:text"
+
+    # Cherche dans le nom de fichier (incl. extension)
+    m_name = NDC_REGEX.search(filename or "")
+    if m_name:
+        return True, f"pattern:{m_name.group(0)} source:filename"
+
+    return False, ""
+
+
+def classify(first_page_text: str, filename: str) -> tuple[str, str]:
+    """
+    Classement avec priorité : NDC > EDB > AUTRES.
+    Retourne (classe, raison).
+    """
+    # 1) NDC prioritaire – texte ou nom du fichier
+    is_ndc, reason_ndc = detect_ndc_in_text_or_filename(first_page_text, filename)
+    if is_ndc:
+        return "NDC", reason_ndc
+
+    # 2) EDB sur la première page (accents/casse insensibles)
+    is_edb, reason_edb = detect_edb(first_page_text)
     if is_edb:
-        return "EDB", f"contains:'{EDB_TOKEN}'"
+        return "EDB", reason_edb
+
+    # 3) Sinon autres
     return "AUTRES", ""
 
 
 # ---------- Programme principal ----------
 def main():
-    parser = argparse.ArgumentParser(description="Classement DOCX en EDB / NDC / AUTRES (première page).")
+    parser = argparse.ArgumentParser(description="Classement DOCX en EDB / NDC / AUTRES (1ère page + nom de fichier).")
     parser.add_argument("--docx-dir", default=DEFAULT_INPUT_DIR,
                         help="Dossier d'entrée contenant les .docx (défaut: docx)")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
@@ -157,17 +202,18 @@ def main():
     ensure_dirs(base_out)
 
     # Collecte des fichiers
-    if args.recursive:
-        candidates = list(in_dir.rglob("*.docx"))
-    else:
-        candidates = list(in_dir.glob("*.docx"))
+    candidates = list(in_dir.rglob("*.docx")) if args.recursive else list(in_dir.glob("*.docx"))
 
     records = []
     total = len(candidates)
     print(f"[INFO] {total} fichier(s) .docx à traiter dans: {in_dir}")
 
-    for i, path in enumerate(sorted(candidates), start=1):
-        rel = path.relative_to(in_dir) if hasattr(path, "relative_to") and str(in_dir) in str(path) else path.name
+    for i, path in enumerate(sorted(candidates, key=lambda p: str(p).lower()), start=1):
+        try:
+            rel = path.relative_to(in_dir)
+        except Exception:
+            rel = path.name
+
         print(f"[{i}/{total}] Traitement: {rel}")
         classification = "ERREUR"
         reason = ""
@@ -176,7 +222,8 @@ def main():
 
         try:
             first_page = extract_first_page_text(path, char_limit=args.first_page_char_limit)
-            classification, reason = classify_first_page(first_page)
+            classification, reason = classify(first_page, path.name)
+
             # Dossier cible selon la classe
             if classification == "EDB":
                 target_dir = base_out / "edb"
@@ -203,11 +250,12 @@ def main():
             "copy_status": copy_status,
         })
 
-    # Rapport Excel
-    df = pd.DataFrame.from_records(records,
-                                   columns=["filename", "original_path", "classification",
-                                            "reason", "destination_path", "copy_status"])
-    report_path = "classify_report.xlsx"
+    # Rapport Excel -> dans le dossier d'entrée (ex: docx/classify_report.xlsx)
+    df = pd.DataFrame.from_records(
+        records,
+        columns=["filename", "original_path", "classification", "reason", "destination_path", "copy_status"],
+    )
+    report_path = in_dir / "classify_report.xlsx"
     df.to_excel(report_path, index=False)
     print(f"[OK] Rapport écrit : {report_path}")
     print("[OK] Terminé.")
