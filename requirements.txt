@@ -2,3 +2,5 @@ pandas
 openpyxl
 pdf2docx
 python-docx
+mammoth
+html2text
