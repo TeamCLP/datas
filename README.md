@@ -1,6 +1,6 @@
 # 📄 Pipeline documentaire – Nettoyage • Dédoublonnage • Conversion • Classification • Export Markdown • Dataset LLM
 
-## 🧩 Schéma global du pipeline (ASCII)
+## 🧩 Schéma global du pipeline
 
 ```
                  ┌────────────────────┐
@@ -33,10 +33,9 @@
                           │
                           ▼
         ┌────────────────────────────────────────┐
-        │ 3) convert_to_docx.py                  │
+        │ 3) convert_to_docx.py (parallélisé)    │
         │ - DOC → DOCX (LibreOffice)             │
         │ - PDF → DOCX (pdf2docx)                │
-        │ - Copie des DOCX                       │
         └────────────────┬───────────────────────┘
                          │
                          ▼
@@ -47,36 +46,36 @@
                          ▼
        ┌────────────────────────────────────────────┐
        │ 4) classify_docx.py                        │
-       │ - Analyse 1ère page                        │
+       │ - Analyse 1ère page + nom fichier          │
        │ - Détection EDB / NDC / AUTRES             │
        └────────────────┬───────────────────────────┘
                         │
                         ▼
          ┌──────────────────────────────────────────────┐
          │ classified_docx/                              │
-         │   ├── edb/                                   │
-         │   ├── ndc/                                   │
+         │   ├── edb/   (CAGIPRITM...)                  │
+         │   ├── ndc/   (CAGIPRITM...)                  │
          │   └── autres/                                │
          └───────────────────────┬──────────────────────┘
                                  │
                                  ▼
       ┌────────────────────────────────────────────────────┐
-      │ 5) convert_classified_to_md.py                     │
-      │ - DOCX → Markdown                                  │
-      │ - Export EDB & NDC                                 │
+      │ 5) extract_docx_to_markdown.py (parallélisé)       │
+      │ - DOCX → Markdown (Mammoth)                        │
+      │ - Suppression TOC, page de garde                   │
       └───────────────────┬────────────────────────────────┘
                           │
                           ▼
          ┌──────────────────────────────────────────┐
          │ markdown/                                 │
-         │   ├── edb/                                │
-         │   └── ndc/                                │
+         │   ├── edb/*.md                           │
+         │   └── ndc/*.md                           │
          └───────────────────────┬──────────────────┘
                                  │
                                  ▼
       ┌────────────────────────────────────────────────────┐
       │ 6) build_dataset_jsonl.py                          │
-      │ - Appariement EDB ↔ NDC                            │
+      │ - Appariement EDB ↔ NDC par code RITM              │
       │ - Export JSONL pour fine-tuning                    │
       └───────────────────┬────────────────────────────────┘
                           │
@@ -91,25 +90,25 @@
 
 # 📘 Description générale
 
-Ce dépôt contient un pipeline complet permettant de transformer un lot de documents bruts en un ensemble :
+Ce dépôt contient un pipeline complet permettant de transformer un lot de documents bruts en un dataset prêt pour le fine-tuning LLM :
 
-- propre
-- dédoublonné
-- homogène
-- converti au format DOCX
-- classé automatiquement (NDC / EDB / AUTRES)
-- exporté en Markdown
-- prêt pour fine-tuning LLM (dataset JSONL)
+- Nettoyage et filtrage des fichiers
+- Dédoublonnage intelligent
+- Conversion homogène en DOCX
+- Classification automatique (NDC / EDB / AUTRES)
+- Export Markdown de qualité
+- Constitution du dataset JSONL
 
-Il repose sur **7 scripts Python**, exécutés dans cet ordre :
+Il repose sur **6 scripts Python**, exécutés dans cet ordre :
 
 1. `clean_extension.py` — Filtrage des extensions valides
 2. `dedupe.py` — Dédoublonnage intelligent
 3. `convert_to_docx.py` — Conversion DOC/PDF → DOCX (parallélisé)
-4. `classify_docx.py` — Classification EDB / NDC / AUTRES
-5. `convert_classified_to_md.py` — Export Markdown (python-docx)
-6. `extract_docx_to_markdown.py` — Export Markdown avancé (Mammoth, parallélisé)
-7. `build_dataset_jsonl.py` — Constitution dataset JSONL pour fine-tuning  
+4. `classify_docx.py` — Classification EDB / NDC / AUTRES par code RITM
+5. `extract_docx_to_markdown.py` — Export Markdown avec Mammoth (parallélisé)
+6. `build_dataset_jsonl.py` — Constitution dataset JSONL pour fine-tuning
+
+**Code RITM** : Les fichiers sont identifiés par leur code `CAGIPRITMNNNNNNN` au début du nom de fichier.
 
 ---
 
@@ -124,32 +123,23 @@ Il repose sur **7 scripts Python**, exécutés dans cet ordre :
 - Ouvrir JupyterLab
 - Ouvrir un Terminal
 
-### **2) Installer l’environnement**
+### **2) Installer l'environnement**
 
 ```bash
-bash
 git clone https://github.com/TeamCLP/datas.git /home/datas && source /home/datas/install.sh
 ```
 
 Le script `install.sh` configure automatiquement :
 
-- Proxy  
-- LibreOffice  
-- Miniconda + Python 3.13  
-- Environnement `pipeline`  
-- Installation du `requirements.txt`  
-- Activation du venv  
-- Positionnement dans `/home/datas`
+- Proxy
+- LibreOffice
+- Miniconda + Python 3.13
+- Environnement `pipeline`
+- Installation du `requirements.txt`
 
 ### **3) Déposer les données sources**
 
-Placer `raw_datas.tar` ici :
-
-```
-/home/datas
-```
-
-Puis extraire :
+Placer `raw_datas.tar` dans `/home/datas` puis extraire :
 
 ```bash
 tar -xvf raw_datas.tar -C raw/
@@ -162,54 +152,41 @@ python clean_extension.py
 python dedupe.py
 python convert_to_docx.py
 python classify_docx.py
-python convert_classified_to_md.py
+python extract_docx_to_markdown.py
+python build_dataset_jsonl.py --report
 ```
 
 ---
 
 # 🧱 Architecture finale
 
-Après exécution :
-
 ```
 datas/
-├── raw/
-├── clean_extension/
-├── dedupe/
-├── docx/
+├── raw/                          # Fichiers bruts d'entrée
+├── clean_extension/              # Fichiers filtrés
+├── dedupe/                       # Fichiers dédoublonnés
+├── docx/                         # Tous les fichiers en DOCX
 ├── classified_docx/
-│   ├── edb/
-│   ├── ndc/
-│   └── autres/
+│   ├── edb/                      # Expressions de Besoin
+│   ├── ndc/                      # Notes de Cadrage
+│   └── autres/                   # Non classés
 ├── markdown/
-│   ├── edb/
-│   └── ndc/
-├── clean_extension.py
-├── dedupe.py
-├── convert_to_docx.py
-├── classify_docx.py
-├── convert_classified_to_md.py
-├── extract_docx_to_markdown.py
-├── build_dataset_jsonl.py
-├── train_dataset.jsonl
-├── val_dataset.jsonl
-└── README.md
+│   ├── edb/                      # EDB en Markdown
+│   └── ndc/                      # NDC en Markdown
+├── train_dataset.jsonl           # Dataset d'entraînement
+├── val_dataset.jsonl             # Dataset de validation
+└── *.py                          # Scripts du pipeline
 ```
 
 ---
 
-# ⚙️ 1. Étape 1 — Nettoyage des extensions  
+# ⚙️ 1. Nettoyage des extensions
 **Script : `clean_extension.py`**
-
-### Rôle
 
 - Parcourt `raw/`
 - Ne conserve que : `.pdf`, `.doc`, `.docx`
 - Ajoute un suffixe `_YYYYMMDD_HHMMSS` en cas de collision
 - Produit : `inventaire_raw.xlsx`
-- Remplit : `clean_extension/`
-
-### Exécution
 
 ```bash
 python clean_extension.py
@@ -217,10 +194,8 @@ python clean_extension.py
 
 ---
 
-# 🧹 2. Étape 2 — Dédoublonnage intelligent  
+# 🧹 2. Dédoublonnage intelligent
 **Script : `dedupe.py`**
-
-### Règles métier
 
 | Cas | Conserver |
 |-----|-----------|
@@ -228,12 +203,7 @@ python clean_extension.py
 | `.doc` sans `.docx` | `.doc` le plus récent |
 | seulement PDF | PDF le plus récent |
 
-### Sorties
-
-- répertoire : `dedupe/`
-- rapport : `dedupe_report.xlsx`
-
-### Exécution
+- Produit : `dedupe_report.xlsx`
 
 ```bash
 python dedupe.py
@@ -241,24 +211,13 @@ python dedupe.py
 
 ---
 
-# 🔁 3. Étape 3 — Conversion DOC→DOCX & PDF→DOCX
+# 🔁 3. Conversion DOC/PDF → DOCX
 **Script : `convert_to_docx.py`** (parallélisé)
-
-### Rôle
 
 - Conversion `.doc` via LibreOffice
 - Conversion `.pdf` via `pdf2docx`
 - Copie des `.docx` existants
-- **Parallélisé** avec ProcessPoolExecutor
-- Output : `docx/`
-- Rapport : `convert_report.xlsx`
-
-### Options
-
-- `--on-exists skip` (défaut) / `overwrite` / `suffix`
-- `--workers N` (défaut: auto = nombre de CPU)
-
-### Exécution
+- Produit : `convert_report.xlsx`
 
 ```bash
 python convert_to_docx.py
@@ -267,47 +226,19 @@ python convert_to_docx.py --workers 4  # limiter à 4 workers
 
 ---
 
-# 🔎 4. Étape 4 — Classification des DOCX
+# 🔎 4. Classification EDB / NDC / AUTRES
 **Script : `classify_docx.py`**
 
-### Rôle
+Analyse de la **première page** et du **nom de fichier** :
 
-Analyse de la **première page** et du **nom de fichier** selon cet ordre :
+1. **NDC** si code client détecté en 1ère page
+2. **EDB** si le nom contient "edb" ou "expression de besoin"
+3. **NDC** si code client détecté dans le nom
+4. **AUTRES** sinon
 
-1. **NDC** si code détecté en 1ère page
-2. **EDB** si le nom contient "edb"
-3. **EDB** si le nom contient "expression de besoin(s)"
-4. **EDB** si le nom contient "eb" ET pas de code NDC en 1ère page
-5. **NDC** si code détecté dans le nom du fichier
-6. **EDB** si la 1ère page contient "expression de besoin(s)"
-7. **AUTRES** sinon
+**Codes clients reconnus** : `CAPS`, `AVEM` (ex: `CAPS_2024_001`)
 
-### Motif NDC
-
-Pattern reconnu : `CLIENT` + `ANNÉE` + `CODE`
-
-- **CLIENT** : `CAPS` ou `AVEM` (tolérance aux espaces internes)
-- **ANNÉE** : 4 caractères alphanumériques (ex: `2024`, `A2B3`)
-- **CODE** : alphanumérique avec tirets/underscores
-
-Exemples : `CAPS_2024_001`, `AVEM2023-42_PF`, `C A P S_A1B2_123`
-
-### Sorties
-
-```
-classified_docx/
-    edb/
-    ndc/
-    autres/
-```
-
-### Rapport
-
-```
-classify_report.xlsx  (dans le dossier racine datas/)
-```
-
-### Exécution
+- Produit : `classify_report.xlsx`
 
 ```bash
 python classify_docx.py
@@ -315,162 +246,72 @@ python classify_docx.py
 
 ---
 
-# ✍️ 5. Étape 5 — Export Markdown  
-**Script : `convert_classified_to_md.py`**
-
-### Rôle
-
-- Convertit en Markdown tous les fichiers de :
-  - `classified_docx/ndc/`
-  - `classified_docx/edb/`
-
-- Dépose les `.md` dans :
-  - `markdown/ndc/`
-  - `markdown/edb/`
-
-### Exécution
-
-```bash
-python convert_classified_to_md.py
-```
-
----
-
-# 📤 6. Étape 6 — Extraction DOCX → Markdown (Mammoth)
+# 📤 5. Export Markdown
 **Script : `extract_docx_to_markdown.py`** (parallélisé)
 
-### Rôle
-
-Extraction avancée par scan des dossiers :
-
-- Scanne les dossiers `classified_docx/edb/` et `classified_docx/ndc/`
+- Scanne `classified_docx/edb/` et `classified_docx/ndc/`
 - Identifie les fichiers par leur code RITM (`CAGIPRITMNNNNNNN`)
-- Convertit les DOCX en Markdown via **Mammoth** (meilleure qualité que python-docx)
+- Convertit les DOCX en Markdown via **Mammoth**
 - Supprime automatiquement : page de garde, table des matières, préambule
-- Préserve : titres, paragraphes, listes, tableaux
-- **Parallélisé** avec ProcessPoolExecutor
-
-### Sorties
-
-```
-markdown/
-├── edb/
-├── ndc/
-└── _logs/
-```
-
-### Exécution
 
 ```bash
 python extract_docx_to_markdown.py
-
-# Options
 python extract_docx_to_markdown.py --workers 4
-python extract_docx_to_markdown.py --edb-dir classified_docx/edb --ndc-dir classified_docx/ndc
 ```
 
 ---
 
-# 🤖 7. Étape 7 — Constitution du dataset JSONL
+# 🤖 6. Constitution du dataset JSONL
 **Script : `build_dataset_jsonl.py`**
 
-### Rôle
-
-Construit un dataset JSONL pour fine-tuning LLM (Mistral Instruct) :
-
 - Scanne `markdown/edb/` et `markdown/ndc/`
-- Apparie les fichiers EDB et NDC par code RITM (`CAGIPRITMNNNNNNN` au début du nom)
-- Gère les cas multi-versions (plusieurs EDB/NDC pour une même référence)
-- Split train/val configurable (90/10 par défaut)
-- Format compatible Mistral Instruct / ChatML / Alpaca
-
-### Stratégies de mapping multi-fichiers
+- Apparie les fichiers EDB ↔ NDC par code RITM commun
+- Gère les cas multi-versions
+- Split train/val (90/10 par défaut)
+- Format Mistral Instruct
 
 | Stratégie | Description |
 |-----------|-------------|
-| `version_match` | Apparie par version détectée (v1↔v1, Etude↔Etude) |
-| `all_combinations` | Crée toutes les combinaisons EDB×NDC |
-| `latest_only` | Utilise uniquement la version la plus récente |
-| `first_only` | Utilise le premier fichier trouvé |
-
-### Exécution
+| `version_match` | Apparie par version (v1↔v1) |
+| `all_combinations` | Toutes les combinaisons EDB×NDC |
+| `latest_only` | Version la plus récente uniquement |
+| `first_only` | Premier fichier trouvé |
 
 ```bash
-# Exécution standard
-python build_dataset_jsonl.py
-
-# Avec rapport détaillé
 python build_dataset_jsonl.py --report
-
-# Simulation sans écriture
-python build_dataset_jsonl.py --dry-run --report
-
-# Options avancées
 python build_dataset_jsonl.py --strategy all_combinations --train_ratio 0.8
 ```
 
-### Sorties
+---
 
-- `train_dataset.jsonl` — Dataset d'entraînement
-- `val_dataset.jsonl` — Dataset de validation
+# 📊 Fichiers générés
+
+| Étape | Fichier | Contenu |
+|-------|---------|---------|
+| 1 | `inventaire_raw.xlsx` | Inventaire et actions |
+| 2 | `dedupe_report.xlsx` | Décisions de dédoublonnage |
+| 3 | `convert_report.xlsx` | Statut des conversions |
+| 4 | `classify_report.xlsx` | Classification EDB/NDC/AUTRES |
+| 6 | `train_dataset.jsonl` | Dataset d'entraînement |
+| 6 | `val_dataset.jsonl` | Dataset de validation |
 
 ---
 
-# 🧭 8. Pipeline complet (ordre recommandé)
+# ⭐ Bonnes pratiques
 
-```bash
-# 1-4: Préparation des documents
-python clean_extension.py
-python dedupe.py
-python convert_to_docx.py
-python classify_docx.py
-
-# 5: Export Markdown basique (python-docx)
-python convert_classified_to_md.py
-
-# 6: Export Markdown avancé (Mammoth) - parallélisé
-python extract_docx_to_markdown.py
-
-# 7: Constitution du dataset JSONL
-python build_dataset_jsonl.py --report
-```
-
-**Note :** Les étapes 5 et 6 sont deux méthodes d'export Markdown. Utilisez :
-- Étape 5 (`convert_classified_to_md.py`) : export rapide, basé sur python-docx
-- Étape 6 (`extract_docx_to_markdown.py`) : export avancé avec Mammoth, meilleure qualité, parallélisé
+- Toujours suivre le pipeline dans l'ordre
+- Ne jamais modifier manuellement les dossiers intermédiaires
+- Utiliser `--report` pour diagnostiquer les problèmes
+- Vérifier les codes RITM communs entre EDB et NDC
 
 ---
 
-# 📊 9. Fichiers Excel/CSV générés
-
-| Étape | Fichier | Emplacement | Contenu |
-|-------|---------|-------------|---------|
-| Nettoyage | `inventaire_raw.xlsx` | `datas/` | inventaire et actions appliquées |
-| Dédoublonnage | `dedupe_report.xlsx` | `datas/` | règles, décisions, justification |
-| Conversion | `convert_report.xlsx` | `datas/` | conversion/copied, logs |
-| Classification | `classify_report.xlsx` | `datas/` | EDB / NDC / AUTRES + destination |
-
----
-
-# ⭐ 10. Bonnes pratiques
-
-- Toujours suivre le pipeline dans l’ordre  
-- Ne jamais modifier manuellement les dossiers intermédiaires  
-- Conserver `--on-exists skip` sauf besoin explicite  
-- Utiliser les rapports Excel pour audit et contrôle  
-
----
-
-# 🧩 11. Résultat attendu
+# 🧩 Résultat attendu
 
 À la fin du pipeline :
 
-- Fichiers nettoyés
-- Doublons supprimés
-- Corpus converti à 100% en `.docx`
-- Documents automatiquement classés
-- Export Markdown propre et structuré
-- Dataset JSONL prêt pour fine-tuning
-- Traçabilité complète
-
-Le pipeline produit un corpus documentaire propre, homogène et un dataset directement exploitable pour le fine-tuning de LLM.
+- Corpus nettoyé et dédoublonné
+- Documents classés par type (EDB/NDC)
+- Export Markdown de qualité
+- Dataset JSONL prêt pour fine-tuning LLM
+- Traçabilité complète via les rapports Excel
