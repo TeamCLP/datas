@@ -96,7 +96,7 @@ soffice --version
 ### Installer les dépendances Python
 
 ```bash
-pip install pandas openpyxl
+pip install pandas openpyxl pdf2docx
 ```
 
 ---
