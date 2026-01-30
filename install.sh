@@ -98,10 +98,28 @@ else
 fi
 
 ############################################################
-# 11) FIN – TERMINAL PRÊT DANS LE BON DOSSIER + BON CONDA
+# 11) CONFIGURATION BASHRC POUR ACTIVATION AUTO
+############################################################
+echo "[OK] Configuration .bashrc pour activation automatique"
+
+# Ajouter l'initialisation conda et l'activation de l'env pipeline au .bashrc
+cat >> ~/.bashrc <<'BASHRC_BLOCK'
+
+# === Pipeline documentaire (ajouté par install.sh) ===
+export PATH="/opt/miniconda/bin:$PATH"
+source /opt/miniconda/etc/profile.d/conda.sh
+conda activate pipeline
+cd /home/datas
+# === Fin configuration pipeline ===
+BASHRC_BLOCK
+
+echo "[OK] Terminal configuré: env 'pipeline' + dossier '/home/datas' au démarrage"
+
+############################################################
+# 12) FIN – TERMINAL PRÊT DANS LE BON DOSSIER + BON CONDA
 ############################################################
 cd "$SCRIPT_DIR"
-mkdir raw
+mkdir -p raw
 
 echo
 echo "============================================================"
