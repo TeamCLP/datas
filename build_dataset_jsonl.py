@@ -11,6 +11,7 @@ Gère les cas avec plusieurs versions:
 
 Dépendances:
   pip install (aucune externe, utilise stdlib)
+  (Le rapport Excel utilise pandas + openpyxl, déjà référencé dans le code)
 
 Usage:
   python build_dataset_jsonl.py --edb_dir edb --ndc_dir ndc --report
@@ -90,10 +91,14 @@ MIN_CONTENT_CHARS = 100
 MAX_CONTENT_CHARS = 0  # 0 = pas de limite
 MIN_CONTENT_LINES = 5
 
+# ⚠️ Corrigé : exclusions au niveau "document entier" uniquement.
+# - Un document strictement vide
+# - Un document qui n'est QUE "ERREUR"
+# - Un document qui n'est QUE "[TEMPLATE]"
 EXCLUDE_CONTENT_PATTERNS = [
-    r'^#?\s*$',
-    r'^\s*ERREUR',
-    r'^\s*\[TEMPLATE\]',
+    r'^\s*$',                # document vide
+    r'^\s*ERREUR\s*$',       # document = ERREUR
+    r'^\s*\[TEMPLATE\]\s*$', # document = [TEMPLATE]
 ]
 
 REQUIRE_CONTENT_PATTERNS = []
@@ -125,7 +130,8 @@ SYSTEM_PROMPT = ""
 # Compile les patterns
 REF_FROM_FILENAME_RE = re.compile(REF_FROM_FILENAME_PATTERN, re.IGNORECASE)
 EXCLUDE_FILENAME_RES = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_FILENAME_PATTERNS]
-EXCLUDE_CONTENT_RES = [re.compile(p, re.MULTILINE | re.IGNORECASE) for p in EXCLUDE_CONTENT_PATTERNS]
+# ⚠️ Corrigé : pas de MULTILINE ici, on fera un fullmatch() sur le doc strip()
+EXCLUDE_CONTENT_RES = [re.compile(p, re.IGNORECASE) for p in EXCLUDE_CONTENT_PATTERNS]
 REQUIRE_CONTENT_RES = [re.compile(p, re.MULTILINE | re.IGNORECASE) for p in REQUIRE_CONTENT_PATTERNS]
 VERSION_RES = [(re.compile(p, re.IGNORECASE), vtype) for p, vtype in VERSION_PATTERNS]
 
@@ -191,9 +197,11 @@ def validate_content(content: str) -> Tuple[bool, str]:
     if MIN_CONTENT_LINES > 0 and len(non_empty_lines) < MIN_CONTENT_LINES:
         return False, f"pas assez de lignes ({len(non_empty_lines)} < {MIN_CONTENT_LINES})"
 
+    # ⚠️ Corrigé : les patterns d'exclusion doivent matcher le document ENTIER
+    doc = content.strip()
     for pattern in EXCLUDE_CONTENT_RES:
-        if pattern.search(content):
-            return False, "matche pattern d'exclusion"
+        if pattern.fullmatch(doc):
+            return False, "matche pattern d'exclusion (doc entier)"
 
     if REQUIRE_CONTENT_RES:
         found = any(pattern.search(content) for pattern in REQUIRE_CONTENT_RES)
@@ -319,7 +327,7 @@ def use_latest_only(files: List[FileInfo]) -> FileInfo:
     if len(files) == 1:
         return files[0]
 
-    # Trier par version décroissante si disponible
+    # Trier par version décroissante si disponible (heuristique)
     versioned = [(f, f.version or '') for f in files]
     versioned.sort(key=lambda x: x[1], reverse=True)
 
@@ -501,8 +509,9 @@ def main():
 
     # Générer le rapport Excel
     report_rows = []
+    train_set = set(train_pairs)  # pour marquer le split
     for ref, edb, ndc in all_pairs:
-        split = "train" if (ref, edb, ndc) in [(r, e, n) for r, e, n in train_pairs] else "val"
+        split = "train" if (ref, edb, ndc) in train_set else "val"
         report_rows.append({
             "Code RITM": ref,
             "Fichier EDB": edb.path.name,
