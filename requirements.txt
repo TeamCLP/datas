@@ -4,3 +4,5 @@ pdf2docx
 python-docx
 mammoth
 html2text
+mammoth
+html2text
