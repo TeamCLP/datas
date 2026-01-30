@@ -25,6 +25,8 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Dict, Tuple, List, Optional, NamedTuple
 
+import pandas as pd
+
 # Configuration du logging
 logging.basicConfig(
     level=logging.INFO,
@@ -497,6 +499,48 @@ def main():
         write_jsonl(train_path, train_records)
         write_jsonl(val_path, val_records)
 
+    # Générer le rapport Excel
+    report_rows = []
+    for ref, edb, ndc in all_pairs:
+        split = "train" if (ref, edb, ndc) in [(r, e, n) for r, e, n in train_pairs] else "val"
+        report_rows.append({
+            "Code RITM": ref,
+            "Fichier EDB": edb.path.name,
+            "Version EDB": edb.version or "",
+            "Fichier NDC": ndc.path.name,
+            "Version NDC": ndc.version or "",
+            "Split": split,
+        })
+
+    # Ajouter les références orphelines
+    for ref in only_edb:
+        for f in edb_index.get(ref, []):
+            report_rows.append({
+                "Code RITM": ref,
+                "Fichier EDB": f.path.name,
+                "Version EDB": f.version or "",
+                "Fichier NDC": "",
+                "Version NDC": "",
+                "Split": "orphelin_edb",
+            })
+
+    for ref in only_ndc:
+        for f in ndc_index.get(ref, []):
+            report_rows.append({
+                "Code RITM": ref,
+                "Fichier EDB": "",
+                "Version EDB": "",
+                "Fichier NDC": f.path.name,
+                "Version NDC": f.version or "",
+                "Split": "orphelin_ndc",
+            })
+
+    report_path = Path.cwd() / "dataset_report.xlsx"
+    if not args.dry_run:
+        df = pd.DataFrame(report_rows)
+        with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Dataset JSONL")
+
     # Résumé
     print()
     print("=" * 60)
@@ -519,8 +563,9 @@ def main():
     if args.dry_run:
         print("[DRY-RUN] Aucun fichier écrit.")
     else:
-        print(f"Train -> {train_path}")
-        print(f"Val   -> {val_path}")
+        print(f"Train  -> {train_path}")
+        print(f"Val    -> {val_path}")
+        print(f"Rapport-> {report_path}")
 
     # Rapport détaillé
     if args.report:

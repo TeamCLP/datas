@@ -254,6 +254,7 @@ python classify_docx.py
 - Identifie les fichiers par leur code RITM (`CAGIPRITMNNNNNNN`)
 - Convertit les DOCX en Markdown via **Mammoth**
 - Supprime automatiquement : page de garde, table des matières, préambule
+- Produit : `extract_report.xlsx`
 
 ```bash
 python extract_docx_to_markdown.py
@@ -270,6 +271,7 @@ python extract_docx_to_markdown.py --workers 4
 - Gère les cas multi-versions
 - Split train/val (90/10 par défaut)
 - Format Mistral Instruct
+- Produit : `dataset_report.xlsx`
 
 | Stratégie | Description |
 |-----------|-------------|
@@ -293,6 +295,8 @@ python build_dataset_jsonl.py --strategy all_combinations --train_ratio 0.8
 | 2 | `dedupe_report.xlsx` | Décisions de dédoublonnage |
 | 3 | `convert_report.xlsx` | Statut des conversions |
 | 4 | `classify_report.xlsx` | Classification EDB/NDC/AUTRES |
+| 5 | `extract_report.xlsx` | Extraction DOCX → Markdown |
+| 6 | `dataset_report.xlsx` | Appariements EDB/NDC et orphelins |
 | 6 | `train_dataset.jsonl` | Dataset d'entraînement |
 | 6 | `val_dataset.jsonl` | Dataset de validation |
 

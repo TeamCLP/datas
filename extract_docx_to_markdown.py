@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+import pandas as pd
 import mammoth
 import html2text
 
@@ -566,21 +567,39 @@ def main() -> int:
                 stats["error"] += 1
                 logger.error(f"[{i}/{total}] ERROR ({mode}) {ritm} - {filename}: {error}")
 
-    # Résumé
-    logger.info("")
-    logger.info("=== Résumé ===")
-    logger.info(f"OK: {stats['ok']}")
-    logger.info(f"Erreurs: {stats['error']}")
-    logger.info(f"Sortie: {output_dir}")
+    # Générer le rapport Excel
+    report_rows = []
+    for mode, ritm, filename, src, out_path, status, error in results:
+        report_rows.append({
+            "Type": mode.upper(),
+            "Code RITM": ritm,
+            "Fichier source": filename,
+            "Chemin source": src,
+            "Fichier Markdown": out_path,
+            "Statut": status,
+            "Erreur": error,
+        })
+
+    report_path = Path.cwd() / "extract_report.xlsx"
+    df = pd.DataFrame(report_rows)
+    with pd.ExcelWriter(report_path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Extraction Markdown")
 
     # Afficher les codes RITM trouvés
     edb_ritms = set(ritm for _, ritm in edb_files)
     ndc_ritms = set(ritm for _, ritm in ndc_files)
     common_ritms = edb_ritms & ndc_ritms
 
+    # Résumé
+    logger.info("")
+    logger.info("=== Résumé ===")
+    logger.info(f"OK: {stats['ok']}")
+    logger.info(f"Erreurs: {stats['error']}")
     logger.info(f"Codes RITM EDB: {len(edb_ritms)}")
     logger.info(f"Codes RITM NDC: {len(ndc_ritms)}")
     logger.info(f"Codes RITM communs: {len(common_ritms)}")
+    logger.info(f"Sortie: {output_dir}")
+    logger.info(f"Rapport: {report_path}")
 
     return 0 if stats["error"] == 0 else 1
 
