@@ -246,16 +246,30 @@ python convert_to_docx.py
 
 ---
 
-# 🔎 4. Étape 4 — Classification des DOCX  
+# 🔎 4. Étape 4 — Classification des DOCX
 **Script : `classify_docx.py`**
 
 ### Rôle
 
-Analyse de la **première page** :
+Analyse de la **première page** et du **nom de fichier** selon cet ordre :
 
-- **EDB** : contient « expression de besoin »  
-- **NDC** : motif `CAPS_YYYY-NNN`  
-- **AUTRES** : aucune correspondance  
+1. **NDC** si code détecté en 1ère page
+2. **EDB** si le nom contient "edb"
+3. **EDB** si le nom contient "expression de besoin(s)"
+4. **EDB** si le nom contient "eb" ET pas de code NDC en 1ère page
+5. **NDC** si code détecté dans le nom du fichier
+6. **EDB** si la 1ère page contient "expression de besoin(s)"
+7. **AUTRES** sinon
+
+### Motif NDC
+
+Pattern reconnu : `CLIENT` + `ANNÉE` + `CODE`
+
+- **CLIENT** : `CAPS` ou `AVEM` (tolérance aux espaces internes)
+- **ANNÉE** : 4 caractères alphanumériques (ex: `2024`, `A2B3`)
+- **CODE** : alphanumérique avec tirets/underscores
+
+Exemples : `CAPS_2024_001`, `AVEM2023-42_PF`, `C A P S_A1B2_123`
 
 ### Sorties
 
@@ -269,7 +283,7 @@ classified_docx/
 ### Rapport
 
 ```
-docx/classify_report.xlsx
+classify_report.xlsx  (dans le dossier racine datas/)
 ```
 
 ### Exécution
@@ -315,12 +329,12 @@ python convert_classified_to_md.py
 
 # 📊 7. Fichiers Excel générés
 
-| Étape | Fichier | Contenu |
-|-------|---------|---------|
-| Nettoyage | `inventaire_raw.xlsx` | inventaire et actions appliquées |
-| Dédoublonnage | `dedupe_report.xlsx` | règles, décisions, justification |
-| Conversion | `convert_report.xlsx` | conversion/copied, logs |
-| Classification | `classify_report.xlsx` | EDB / NDC / AUTRES + destination |
+| Étape | Fichier | Emplacement | Contenu |
+|-------|---------|-------------|---------|
+| Nettoyage | `inventaire_raw.xlsx` | `datas/` | inventaire et actions appliquées |
+| Dédoublonnage | `dedupe_report.xlsx` | `datas/` | règles, décisions, justification |
+| Conversion | `convert_report.xlsx` | `datas/` | conversion/copied, logs |
+| Classification | `classify_report.xlsx` | `datas/` | EDB / NDC / AUTRES + destination |
 
 ---
 

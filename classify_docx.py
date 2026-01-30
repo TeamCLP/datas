@@ -89,13 +89,6 @@ def strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if not unicodedata.combining(c))
 
 # ---------- Extraction 1re page ----------
-def paragraph_has_page_break(p) -> bool:
-    for br in safe_xpath(p._element, ".//w:br"):
-        br_type = br.get(qn("w:type"))
-        if (br_type or "").lower() == "page":
-            return True
-    return False
-
 def element_text_runs(el) -> str:
     texts = []
     for t in safe_xpath(el, ".//w:t"):

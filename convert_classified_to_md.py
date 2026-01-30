@@ -171,23 +171,6 @@ def docx_to_markdown(docx_path: Path) -> str:
     out_lines.append(f"# {docx_path.stem}")
     out_lines.append("")
 
-    # Itération conservant l'ordre logique : paragraphs + tables.
-    # python-docx ne permet pas un merge natif p/tables en ordre ; on parcourt via _element
-    # pour respecter l'ordre réel des blocs.
-    for block in doc.element.body:
-        tag = block.tag.rsplit("}", 1)[-1]  # nom local (w:p, w:tbl, etc.)
-
-        if tag == "p":  # paragraphe
-            p = doc.paragraphs[len([e for e in doc.element.body if e.tag.rsplit('}',1)[-1]=='p']) - len(doc.paragraphs)]
-            # ^ la ligne ci-dessus est fragile. Alternative : reconstituer par index en avançant
-            # plus simplement : on itère via doc.paragraphs séparément. Pour rester robuste,
-            # on abandonne l'ordre p/tables fin : on préfère une passe "parag + tables à la suite".
-            # -> on choisit l'approche simple et fiable ci-dessous.
-            pass  # on ne l'utilise pas (voir plus bas)
-        elif tag == "tbl":
-            # idem, gestion plus simple via doc.tables ensuite
-            pass
-
     # Approche simple et fiable : paragraphs puis tables
     # (la majorité des documents ne nécessitent pas l'ordre intercalé strict)
     for p in doc.paragraphs:
