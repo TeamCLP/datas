@@ -4,26 +4,23 @@
 """
 Classification des DOCX (première page + nom de fichier) en EDB / NDC / AUTRES.
 
-Ordre d'évaluation (règles demandées) :
+Ordre d'évaluation (règles validées) :
   1) NDC si code en première page
-  2) EDB si le nom de fichier contient "edb" (insensible casse)
-  3) EDB si le nom de fichier contient une des phrases EDB (insensible casse/accents) :
-       - "expression de besoin"
-       - "expression de besoins"
-       - "expressions de besoins"
+  2) EDB si le nom contient "edb" (insensible casse)
+  3) EDB si le nom contient "expr + besoin(s)" (Règle A, insensible casse/accents, séparateurs libres, "de" optionnel)
   4) EDB si le nom contient "eb" ET qu'aucun code NDC n'est présent en première page
   5) NDC si un code est détecté dans le nom du fichier
-  6) EDB si la première page contient ("expression de besoin" | "expression de besoins" | "expressions de besoins")
-       (insensible casse/accents)
+  6) EDB si la première page contient une des phrases EDB (insensible casse/accents)
   7) AUTRES sinon
 
-Améliorations principales :
-- Regex NDC très tolérante (espaces, underscore, tirets ASCII/typographiques, “CAP S”, pas d'ancre de fin).
-- Si le DOCX est illisible (BadZipFile / KeyError…), on CLASSIFIE quand même à partir du NOM, et on copie.
-- Extraction "1re page" : paragraphs + tables + textboxes + header/footer (section 1).
-- Rapport Excel : parent de --docx-dir (p.ex. datas/classify_report.xlsx).
+Caractéristiques :
+- NDC multi-clients : CAPS et AVEM (tolérance aux espaces internes entre lettres).
+- Extraction "1re page" robuste (paragraphes, tables, textboxes, header/footer) avec namespaces + safe_xpath.
+- Si le DOCX est illisible, on CLASSIFIE quand même par le NOM (et on copie).
+- Rapport Excel écrit dans le parent de --docx-dir (ex: datas/classify_report.xlsx).
 
-Dépendances : python-docx, pandas, openpyxl
+⚠️ Modif demandée ici :
+- La partie "année" du motif NDC n’est plus limitée aux chiffres : elle accepte désormais 4 caractères alphanumériques (ex: `A2B3`).
 """
 
 import argparse
@@ -43,6 +40,21 @@ DEFAULT_OUTPUT_DIR = "classified_docx"
 DEFAULT_ON_EXISTS = "skip"      # skip | overwrite | suffix
 DEFAULT_FIRST_PAGE_CHAR_LIMIT = 12000
 
+# ---------- Namespaces XML pour les XPath ----------
+NS = {
+    "w":  "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+    "a":  "http://schemas.openxmlformats.org/drawingml/2006/main",
+    "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "v":  "urn:schemas-microsoft-com:vml",
+}
+
+def safe_xpath(el, expression):
+    """Exécute un XPath en sécurité et renvoie [] en cas d'échec (évite XPathEvalError)."""
+    try:
+        return el.xpath(expression, namespaces=NS)
+    except Exception:
+        return []
+
 # ---------- EDB Tokens (insensibles accents/casse) ----------
 EDB_TOKENS = [
     "expression de besoin",
@@ -50,13 +62,25 @@ EDB_TOKENS = [
     "expressions de besoins",
 ]
 
+# RÈGLE A (nom) : expr + (de)? + besoin(s), séparateurs libres (. _ - espaces), accents/casse insensibles
+EDB_NAME_ABBR_PATTERN = r"\bexpr(?:ession)?[\W_]*(?:de[\W_]*)?besoin(?:s)?\b"
+EDB_NAME_ABBR_REGEX = re.compile(EDB_NAME_ABBR_PATTERN)
+
 # ---------- Regex NDC (large et tolérante) ----------
-# Autorise : "CAPS" avec éventuels espaces internes ("CAP S"), casse insensible
-# Séparateurs libres entre segments : espace, underscore, hyphen, non‑breaking hyphen, en dash, em dash
-SEP = r"[ \-_\u2011\u2012\u2013\u2014]*"   # 0+ pour tolérer "CAPS2023-123"
-CLIENT = r"C\s*A\s*P\s*S"                  # "CAPS" ou "CAP S" etc.
-NDC_PATTERN = rf"(?i)(?<!\w){CLIENT}{SEP}\d{{4}}{SEP}\d+"  # pas d'ancre de fin pour matcher '..._PF'
-NDC_REGEX = re.compile(NDC_PATTERN)
+# Clients acceptés avec tolérance espaces internes : "CAPS" -> C\s*A\s*P\s*S ; "AVEM" -> A\s*V\s*E\s*M
+CLIENTS = ["CAPS", "AVEM"]
+CLIENT_PATTERNS = [r"\s*".join(list(c)) for c in CLIENTS]   # ["C\s*A\s*P\s*S", "A\s*V\s*E\s*M"]
+CLIENT_ALT = "(?:" + "|".join(CLIENT_PATTERNS) + ")"
+
+# Séparateurs libres entre segments : espace, underscore, hyphens (ASCII et typographiques)
+SEP = r"[ \-_\u2011\u2012\u2013\u2014]*"   # 0+ pour tolérer client+année collés (CAPS2023-123)
+
+# Modèle NDC : CLIENT SEP YEAR(4 alphanum) SEP CODE
+# - YEAR : 4 caractères alphanumériques (⚠️ élargi vs version précédente)
+# - CODE : alphanum + sous-segments '-'/'_' (déjà élargi précédemment)
+# Pas d'ancre de fin (pour capter des suffixes "_PF", etc.)
+NDC_PATTERN = rf"(?i){CLIENT_ALT}{SEP}[A-Za-z0-9]{{4}}{SEP}[A-Za-z0-9][A-Za-z0-9\-_]*"
+NDC_REGEX = re.compile(NDC_PATTERN, flags=re.IGNORECASE)
 
 # ---------- Utils accents ----------
 def strip_accents(s: str) -> str:
@@ -66,7 +90,7 @@ def strip_accents(s: str) -> str:
 
 # ---------- Extraction 1re page ----------
 def paragraph_has_page_break(p) -> bool:
-    for br in p._element.xpath(".//w:br"):
+    for br in safe_xpath(p._element, ".//w:br"):
         br_type = br.get(qn("w:type"))
         if (br_type or "").lower() == "page":
             return True
@@ -74,7 +98,7 @@ def paragraph_has_page_break(p) -> bool:
 
 def element_text_runs(el) -> str:
     texts = []
-    for t in el.xpath(".//w:t"):
+    for t in safe_xpath(el, ".//w:t"):
         if t.text:
             texts.append(t.text)
     return "\n".join(texts)
@@ -87,19 +111,25 @@ def extract_header_footer_text(doc: Document) -> str:
             for p in sec.header.paragraphs:
                 if p.text:
                     parts.append(p.text)
-            for tbl in sec.header._element.xpath(".//w:tbl"):
+            for tbl in safe_xpath(sec.header._element, ".//w:tbl"):
                 parts.append(element_text_runs(tbl))
         if getattr(sec, "footer", None):
             for p in sec.footer.paragraphs:
                 if p.text:
                     parts.append(p.text)
-            for tbl in sec.footer._element.xpath(".//w:tbl"):
+            for tbl in safe_xpath(sec.footer._element, ".//w:tbl"):
                 parts.append(element_text_runs(tbl))
     except Exception:
         pass
     return "\n".join(filter(None, parts))
 
 def extract_first_page_text(docx_path: Path, char_limit: int) -> str:
+    """
+    "Approx first page" robuste :
+      - header/footer section 1
+      - corps du document : paragraphs + tables + textboxes
+      - stop au 1er saut de page ou à char_limit
+    """
     doc = Document(str(docx_path))
     parts = []
 
@@ -118,7 +148,7 @@ def extract_first_page_text(docx_path: Path, char_limit: int) -> str:
             if p_txt:
                 parts.append(p_txt)
                 total_len += len(p_txt) + 1
-            for br in child.xpath(".//w:br"):
+            for br in safe_xpath(child, ".//w:br"):
                 br_type = br.get(qn("w:type"))
                 if (br_type or "").lower() == "page":
                     return "\n".join(parts)
@@ -129,9 +159,9 @@ def extract_first_page_text(docx_path: Path, char_limit: int) -> str:
                 parts.append(t_txt)
                 total_len += len(t_txt) + 1
 
-        # Textboxes
+        # Textboxes (contenu texte encapsulé)
         txbx_chunks = []
-        for txbx in child.xpath(".//w:txbxContent"):
+        for txbx in safe_xpath(child, ".//w:txbxContent"):
             txbx_chunks.append(element_text_runs(txbx))
         if txbx_chunks:
             tx = "\n".join(filter(None, txbx_chunks))
@@ -199,6 +229,16 @@ def detect_edb_phrases_in_filename(filename: str) -> tuple[bool, str]:
             return True, f"filename_contains_phrase:'{token}'"
     return False, ""
 
+def detect_edb_abbrev_in_filename(filename: str) -> tuple[bool, str]:
+    """
+    RÈGLE A (prudente) : EDB si le nom présente 'expr' (+ 'ession' optionnel) puis (optionnel 'de') puis 'besoin(s)',
+    avec séparateurs libres (. _ - espaces).
+    """
+    norm_name = strip_accents(filename).lower()
+    if EDB_NAME_ABBR_REGEX.search(norm_name):
+        return True, "filename_contains_abbrev:'expr...besoin(s)'"
+    return False, ""
+
 # ---------- Classification ----------
 def classify(first_page_text: str, filename: str, content_read_ok: bool) -> tuple[str, str]:
     """
@@ -216,12 +256,15 @@ def classify(first_page_text: str, filename: str, content_read_ok: bool) -> tupl
     if "edb" in filename_lower:
         return "EDB", "filename_contains:edb"
 
-    # 3) EDB si nom contient une des phrases EDB (insensible casse/accents)
-    edb_name_phrase, reason_edb_name = detect_edb_phrases_in_filename(filename)
+    # 3) EDB si nom contient une des phrases EDB OU l'abréviation 'expr...besoin(s)'
+    edb_name_phrase, reason_phrase = detect_edb_phrases_in_filename(filename)
     if edb_name_phrase:
-        return "EDB", reason_edb_name
+        return "EDB", reason_phrase
+    edb_name_abbrev, reason_abbrev = detect_edb_abbrev_in_filename(filename)
+    if edb_name_abbrev:
+        return "EDB", reason_abbrev
 
-    # 4) EDB si nom contient 'eb' ET pas de code NDC en 1ère page
+    # 4) EDB si nom contient 'eb' ET pas de code NDC en 1re page
     if "eb" in filename_lower:
         if content_read_ok:
             ndc_first, _ = detect_ndc_in_first_page(first_page_text)
@@ -235,7 +278,7 @@ def classify(first_page_text: str, filename: str, content_read_ok: bool) -> tupl
     if ndc_name:
         return "NDC", reason_ndc_name
 
-    # 6) EDB si tokens EDB dans 1ère page (si lisible)
+    # 6) EDB si tokens EDB dans 1re page (si lisible)
     if content_read_ok:
         edb_text, reason_edb = detect_edb_in_first_page(first_page_text)
         if edb_text:
