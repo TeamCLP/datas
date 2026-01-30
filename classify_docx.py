@@ -4,18 +4,21 @@
 """
 Classification des DOCX (première page + nom de fichier) en EDB / NDC / AUTRES.
 
-Règles :
-- EDB si l'une des expressions (insensible casse/accents) est présente dans la première page :
+Règles (ordre d'évaluation appliqué) :
+1) NDC si un code est détecté dans la première page (prioritaire)
+2) EDB si le nom de fichier contient "edb" (insensible à la casse)
+3) EDB si le nom contient "eb" ET qu'aucun code NDC n'est présent en première page
+4) NDC si un code est détecté dans le nom du fichier
+5) EDB si la première page contient l'une des expressions (insensible casse/accents) :
     • "expression de besoin"
     • "expression de besoins"
     • "expressions de besoins"
-- NDC si un motif code client est détecté (prioritaire sur EDB), au choix :
-    • dans la première page
-    • dans le nom du fichier (avec extension)
-  Motif accepté : CAPS[-_]YYYY[-_]NNN (ex : CAPS_2020-132, CAPS-2020_132, CAPS_2020_132)
-  (client fixé à "CAPS", année = 4 chiffres, numéro = >= 1 chiffre)
+6) AUTRES sinon
 
-- AUTRES sinon
+Détection NDC :
+- Codes "CAPS[-_]YYYY[-_]NNN" avec "-" ou "_" comme séparateurs
+- Client fixé à "CAPS", année = 4 chiffres, numéro = >= 1 chiffre
+- Recherche dans la première page ET le nom du fichier
 
 Copies :
 - Les fichiers sont copiés selon la classe dans :
@@ -25,7 +28,7 @@ Copies :
       └─ autres/
 
 Traçabilité :
-- Un rapport Excel est généré dans le dossier d'entrée (ex : docx/classify_report.xlsx).
+- Un rapport Excel est généré dans le dossier parent de --docx-dir (ex : datas/classify_report.xlsx).
 
 CLI :
 - --docx-dir : dossier d'entrée (défaut: docx)
@@ -124,7 +127,7 @@ def safe_copy(src: Path, dst_dir: Path, on_exists: str):
 
 
 # ---------- Détection métier ----------
-# Variantes EDB (insensibles aux accents/majuscules)
+# EDB : variantes dans la première page (insensibles aux accents/majuscules)
 EDB_TOKENS = [
     "expression de besoin",
     "expression de besoins",
@@ -136,49 +139,67 @@ EDB_TOKENS = [
 NDC_REGEX = re.compile(r"\bCAPS[-_]\d{4}[-_]\d+\b", flags=re.IGNORECASE)
 
 
-def detect_edb(text: str) -> tuple[bool, str]:
+def detect_edb_in_first_page(text: str) -> tuple[bool, str]:
     """Détection EDB dans la première page (insensible accents/casse)."""
     norm_text = strip_accents(text).lower()
     for token in EDB_TOKENS:
         if token in norm_text:
-            return True, f"contains:'{token}'"
+            return True, f"contains_first_page:'{token}'"
     return False, ""
 
 
-def detect_ndc_in_text_or_filename(text: str, filename: str) -> tuple[bool, str]:
-    """
-    Détection NDC dans la première page OU le nom de fichier.
-    Renvoie (is_ndc, reason) avec la source et le motif trouvé.
-    """
-    # Cherche dans le texte de la première page (cas-insensitive via regex)
-    m_text = NDC_REGEX.search(text or "")
-    if m_text:
-        return True, f"pattern:{m_text.group(0)} source:text"
+def detect_ndc_in_first_page(text: str) -> tuple[bool, str]:
+    """Détection NDC dans la première page."""
+    m = NDC_REGEX.search(text or "")
+    if m:
+        return True, f"pattern:{m.group(0)} source:first_page"
+    return False, ""
 
-    # Cherche dans le nom de fichier (incl. extension)
-    m_name = NDC_REGEX.search(filename or "")
-    if m_name:
-        return True, f"pattern:{m_name.group(0)} source:filename"
 
+def detect_ndc_in_filename(filename: str) -> tuple[bool, str]:
+    """Détection NDC dans le nom du fichier (incluant l'extension)."""
+    m = NDC_REGEX.search(filename or "")
+    if m:
+        return True, f"pattern:{m.group(0)} source:filename"
     return False, ""
 
 
 def classify(first_page_text: str, filename: str) -> tuple[str, str]:
     """
-    Classement avec priorité : NDC > EDB > AUTRES.
-    Retourne (classe, raison).
+    Classement avec ordre:
+      1) NDC si code en première page
+      2) EDB si nom contient 'edb'
+      3) EDB si nom contient 'eb' ET pas de code NDC en première page
+      4) NDC si code dans le nom
+      5) EDB si texte EDB en première page
+      6) AUTRES
     """
-    # 1) NDC prioritaire – texte ou nom du fichier
-    is_ndc, reason_ndc = detect_ndc_in_text_or_filename(first_page_text, filename)
-    if is_ndc:
-        return "NDC", reason_ndc
+    filename_lower = (filename or "").lower()
 
-    # 2) EDB sur la première page (accents/casse insensibles)
-    is_edb, reason_edb = detect_edb(first_page_text)
-    if is_edb:
-        return "EDB", reason_edb
+    # 1) NDC si code dans la première page
+    ndc_first, reason_ndc_first = detect_ndc_in_first_page(first_page_text)
+    if ndc_first:
+        return "NDC", reason_ndc_first
 
-    # 3) Sinon autres
+    # 2) EDB si nom contient 'edb'
+    if "edb" in filename_lower:
+        return "EDB", "filename_contains:edb"
+
+    # 3) EDB si nom contient 'eb' ET pas de code NDC en première page (déjà vérifié)
+    if "eb" in filename_lower:
+        return "EDB", "filename_contains:eb AND no_ndc_on_first_page"
+
+    # 4) NDC si code dans le nom
+    ndc_name, reason_ndc_name = detect_ndc_in_filename(filename)
+    if ndc_name:
+        return "NDC", reason_ndc_name
+
+    # 5) EDB si texte EDB dans la première page
+    edb_text, reason_edb_text = detect_edb_in_first_page(first_page_text)
+    if edb_text:
+        return "EDB", reason_edb_text
+
+    # 6) AUTRES
     return "AUTRES", ""
 
 
@@ -250,12 +271,13 @@ def main():
             "copy_status": copy_status,
         })
 
-    # Rapport Excel -> dans le dossier d'entrée (ex: docx/classify_report.xlsx)
+    # Rapport Excel -> dans le dossier parent de --docx-dir (ex: datas/classify_report.xlsx)
+    repo_root = in_dir.parent
+    report_path = repo_root / "classify_report.xlsx"
     df = pd.DataFrame.from_records(
         records,
         columns=["filename", "original_path", "classification", "reason", "destination_path", "copy_status"],
     )
-    report_path = in_dir / "classify_report.xlsx"
     df.to_excel(report_path, index=False)
     print(f"[OK] Rapport écrit : {report_path}")
     print("[OK] Terminé.")
