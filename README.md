@@ -1,4 +1,4 @@
-# 📄 Pipeline documentaire – Nettoyage • Dédoublonnage • Conversion • Classification • Export Markdown
+# 📄 Pipeline documentaire – Nettoyage • Dédoublonnage • Conversion • Classification • Export Markdown • Dataset LLM
 
 ## 🧩 Schéma global du pipeline (ASCII)
 
@@ -71,6 +71,19 @@
          │ markdown/                                 │
          │   ├── edb/                                │
          │   └── ndc/                                │
+         └───────────────────────┬──────────────────┘
+                                 │
+                                 ▼
+      ┌────────────────────────────────────────────────────┐
+      │ 6) build_dataset_jsonl.py                          │
+      │ - Appariement EDB ↔ NDC                            │
+      │ - Export JSONL pour fine-tuning                    │
+      └───────────────────┬────────────────────────────────┘
+                          │
+                          ▼
+         ┌──────────────────────────────────────────┐
+         │ train_dataset.jsonl                       │
+         │ val_dataset.jsonl                         │
          └──────────────────────────────────────────┘
 ```
 
@@ -80,20 +93,26 @@
 
 Ce dépôt contient un pipeline complet permettant de transformer un lot de documents bruts en un ensemble :
 
-- propre  
-- dédoublonné  
-- homogène  
-- converti au format DOCX  
-- classé automatiquement (NDC / EDB / AUTRES)  
-- exporté en Markdown  
+- propre
+- dédoublonné
+- homogène
+- converti au format DOCX
+- classé automatiquement (NDC / EDB / AUTRES)
+- exporté en Markdown
+- prêt pour fine-tuning LLM (dataset JSONL)
 
-Il repose sur **cinq scripts Python**, exécutés dans cet ordre :
+Il repose sur **sept scripts Python** :
 
-1. `clean_extension.py`  
-2. `dedupe.py`  
-3. `convert_to_docx.py`  
-4. `classify_docx.py`  
-5. `convert_classified_to_md.py`  
+**Pipeline principal (étapes 1-5) :**
+1. `clean_extension.py`
+2. `dedupe.py`
+3. `convert_to_docx.py`
+4. `classify_docx.py`
+5. `convert_classified_to_md.py`
+
+**Scripts complémentaires :**
+6. `extract_docx_to_markdown.py` — Extraction DOCX → Markdown (via Excel de mapping)
+7. `build_dataset_jsonl.py` — Constitution dataset JSONL pour fine-tuning  
 
 ---
 
@@ -157,10 +176,10 @@ Après exécution :
 
 ```
 datas/
-├── raw/                   
-├── clean_extension/       
-├── dedupe/                
-├── docx/                  
+├── raw/
+├── clean_extension/
+├── dedupe/
+├── docx/
 ├── classified_docx/
 │   ├── edb/
 │   ├── ndc/
@@ -173,6 +192,10 @@ datas/
 ├── convert_to_docx.py
 ├── classify_docx.py
 ├── convert_classified_to_md.py
+├── extract_docx_to_markdown.py
+├── build_dataset_jsonl.py
+├── train_dataset.jsonl
+├── val_dataset.jsonl
 └── README.md
 ```
 
@@ -315,19 +338,108 @@ python convert_classified_to_md.py
 
 ---
 
-# 🧭 6. Pipeline complet (ordre recommandé)
+# 📤 6. Extraction DOCX → Markdown (alternative)
+**Script : `extract_docx_to_markdown.py`**
+
+### Rôle
+
+Script alternatif d'extraction basé sur un fichier Excel de mapping :
+
+- Lit un fichier Excel contenant les chemins des EDB et NDC
+- Convertit les DOCX en Markdown via **Mammoth** (meilleure qualité)
+- Supprime automatiquement : page de garde, table des matières, préambule
+- Préserve : titres, paragraphes, listes, tableaux
+
+### Configuration
+
+Modifier les constantes en début de fichier :
+
+```python
+EXCEL_NAME = "couverture_EDB_NDC_par_RITM.xlsx"
+COL_EDB = 5  # Colonne F
+COL_NDC = 6  # Colonne G
+EXCEL_FILTERS = [(3, "OUI")]  # Filtre colonne D = "OUI"
+```
+
+### Sorties
+
+```
+dataset_markdown/
+├── edb/
+├── ndc/
+├── _logs/
+└── conversion_report.csv
+```
+
+### Exécution
 
 ```bash
+python extract_docx_to_markdown.py
+```
+
+---
+
+# 🤖 7. Constitution du dataset JSONL
+**Script : `build_dataset_jsonl.py`**
+
+### Rôle
+
+Construit un dataset JSONL pour fine-tuning LLM (Mistral Instruct) :
+
+- Apparie les fichiers EDB et NDC par référence (ex: `CAGIPRITM123456`)
+- Gère les cas multi-versions (plusieurs EDB/NDC pour une même référence)
+- Split train/val configurable (90/10 par défaut)
+- Format compatible Mistral Instruct / ChatML / Alpaca
+
+### Stratégies de mapping multi-fichiers
+
+| Stratégie | Description |
+|-----------|-------------|
+| `version_match` | Apparie par version détectée (v1↔v1, Etude↔Etude) |
+| `all_combinations` | Crée toutes les combinaisons EDB×NDC |
+| `latest_only` | Utilise uniquement la version la plus récente |
+| `first_only` | Utilise le premier fichier trouvé |
+
+### Exécution
+
+```bash
+# Exécution standard
+python build_dataset_jsonl.py
+
+# Avec rapport détaillé
+python build_dataset_jsonl.py --report
+
+# Simulation sans écriture
+python build_dataset_jsonl.py --dry-run --report
+
+# Options avancées
+python build_dataset_jsonl.py --strategy all_combinations --train_ratio 0.8
+```
+
+### Sorties
+
+- `train_dataset.jsonl` — Dataset d'entraînement
+- `val_dataset.jsonl` — Dataset de validation
+
+---
+
+# 🧭 8. Pipeline complet (ordre recommandé)
+
+```bash
+# Pipeline principal (traitement des documents bruts)
 python clean_extension.py
 python dedupe.py
 python convert_to_docx.py
 python classify_docx.py
 python convert_classified_to_md.py
+
+# Constitution du dataset LLM (après le pipeline principal)
+python build_dataset_jsonl.py --report
 ```
 
 ---
 
-# 📊 7. Fichiers Excel générés
+# 📊 9. Fichiers Excel/CSV générés
 
 | Étape | Fichier | Emplacement | Contenu |
 |-------|---------|-------------|---------|
@@ -335,10 +447,11 @@ python convert_classified_to_md.py
 | Dédoublonnage | `dedupe_report.xlsx` | `datas/` | règles, décisions, justification |
 | Conversion | `convert_report.xlsx` | `datas/` | conversion/copied, logs |
 | Classification | `classify_report.xlsx` | `datas/` | EDB / NDC / AUTRES + destination |
+| Extraction | `conversion_report.csv` | `dataset_markdown/` | statut extraction DOCX → MD |
 
 ---
 
-# ⭐ Bonnes pratiques
+# ⭐ 10. Bonnes pratiques
 
 - Toujours suivre le pipeline dans l’ordre  
 - Ne jamais modifier manuellement les dossiers intermédiaires  
@@ -347,15 +460,16 @@ python convert_classified_to_md.py
 
 ---
 
-# 🧩 Résultat attendu
+# 🧩 11. Résultat attendu
 
 À la fin du pipeline :
 
-- Fichiers nettoyés  
-- Doublons supprimés  
-- Corpus converti à 100% en `.docx`  
-- Documents automatiquement classés  
-- Export Markdown propre et structuré  
-- Traçabilité complète  
+- Fichiers nettoyés
+- Doublons supprimés
+- Corpus converti à 100% en `.docx`
+- Documents automatiquement classés
+- Export Markdown propre et structuré
+- Dataset JSONL prêt pour fine-tuning
+- Traçabilité complète
 
-Le pipeline produit un corpus documentaire propre, homogène et exploitable immédiatement.
+Le pipeline produit un corpus documentaire propre, homogène et un dataset directement exploitable pour le fine-tuning de LLM.
