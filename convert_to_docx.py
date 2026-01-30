@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-convert_to_docx.py (DOC + PDF -> DOCX)
+convert_to_docx.py (DOC + PDF -> DOCX) - VERSION PARALLÉLISÉE
 - Source par défaut : ./dedupe
 - Destination par défaut : ./docx (à côté de la source)
 - Convertit tous les .doc -> .docx via LibreOffice (soffice)
@@ -10,16 +10,20 @@ convert_to_docx.py (DOC + PDF -> DOCX)
 - Copie aussi tous les .docx déjà au bon format depuis dedupe vers docx
 - Génère un Excel de traçabilité : convert_report.xlsx
 - Gestion des collisions via --on-exists {skip|overwrite|suffix}
+- Parallélisation configurable via --workers
 """
 
 import argparse
 import subprocess
 import shutil
+import os
 from pathlib import Path
 from datetime import datetime
 import tempfile
 import pandas as pd
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Tuple, Optional
 
 # --- PDF conversion (pdf2docx) ---
 try:
@@ -31,9 +35,10 @@ except Exception:
 DEFAULT_SOURCE = "dedupe"
 DEFAULT_REPORT = "convert_report.xlsx"
 ON_EXISTS_CHOICES = {"skip", "overwrite", "suffix"}
+DEFAULT_WORKERS = 0  # 0 = auto (nombre de CPU)
 
 
-def find_soffice(user_path: str | None) -> Path | None:
+def find_soffice(user_path: Optional[str]) -> Optional[Path]:
     """Trouve le binaire 'soffice'."""
     if user_path:
         p = Path(user_path)
@@ -42,101 +47,196 @@ def find_soffice(user_path: str | None) -> Path | None:
     return Path(which) if which else None
 
 
-def run_soffice_convert(soffice: Path, src_doc: Path, out_dir: Path) -> tuple[bool, str]:
+def run_soffice_convert(soffice: Path, src_doc: Path, out_dir: Path) -> Tuple[bool, str]:
     """
     Exécute LibreOffice pour convertir src_doc -> .docx dans out_dir.
+    Utilise un profil utilisateur temporaire pour permettre le parallélisme.
     Retourne (success, output_text).
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        str(soffice),
-        "--headless", "--nologo", "--nodefault", "--invisible",
-        "--convert-to", "docx",
-        "--outdir", str(out_dir),
-        str(src_doc),
-    ]
-    proc = subprocess.run(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
-    )
-    output = (proc.stdout or "").strip()
+
+    # Créer un profil temporaire unique pour cette instance
+    with tempfile.TemporaryDirectory() as user_profile:
+        cmd = [
+            str(soffice),
+            f"-env:UserInstallation=file://{user_profile}",
+            "--headless", "--nologo", "--nodefault", "--invisible",
+            "--convert-to", "docx",
+            "--outdir", str(out_dir),
+            str(src_doc),
+        ]
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+        )
+        output = (proc.stdout or "").strip()
+
     produced = out_dir / (src_doc.stem + ".docx")
     return produced.exists(), output
 
 
-def convert_pdf_with_policy(pdf_path: Path, target: Path, on_exists: str) -> tuple[bool, str, str]:
-    """
-    Convertit un PDF en DOCX vers le chemin 'target', en appliquant la politique de collision.
-    Retourne (success, message, final_output_path_str).
-    """
-    if not PDF2DOCX_AVAILABLE:
-        return False, "pdf2docx non disponible (installez-le)", ""
+# ------------------------------
+# Fonctions de traitement unitaire (pour parallélisation)
+# ------------------------------
 
-    target.parent.mkdir(parents=True, exist_ok=True)
+def process_doc(args: Tuple) -> dict:
+    """Traite un fichier .doc -> .docx"""
+    doc_path, dest_dir, soffice_path, on_exists = args
+    doc_path = Path(doc_path)
+    dest_dir = Path(dest_dir)
+    soffice_path = Path(soffice_path)
+
+    expected = dest_dir / (doc_path.stem + ".docx")
+    action = ""
+    message = ""
+    out_path = ""
+
+    if expected.exists():
+        if on_exists == "skip":
+            action, message = "ignoré", "existe déjà (skip)"
+        elif on_exists == "overwrite":
+            ok, out = run_soffice_convert(soffice_path, doc_path, dest_dir)
+            if ok:
+                action, message, out_path = "converti (écrasé)", "overwrite", str(expected)
+            else:
+                action, message = "échec", f"conversion échouée | {out}"
+        elif on_exists == "suffix":
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_out = Path(tmpdir)
+                ok, out = run_soffice_convert(soffice_path, doc_path, tmp_out)
+                if ok:
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    final = expected.with_name(f"{expected.stem}_{ts}{expected.suffix}")
+                    (tmp_out / expected.name).replace(final)
+                    action, message, out_path = "converti (suffixé)", "collision évitée", str(final)
+                else:
+                    action, message = "échec", f"conversion échouée | {out}"
+    else:
+        ok, out = run_soffice_convert(soffice_path, doc_path, dest_dir)
+        if ok:
+            action, message, out_path = "converti", "OK", str(expected)
+        else:
+            action, message = "échec", f"conversion échouée | {out}"
+
+    return {
+        "Type": "DOC->DOCX",
+        "Fichier source": doc_path.name,
+        "Chemin source": str(doc_path),
+        "Action": action,
+        "Message": message,
+        "Fichier généré": out_path,
+    }
+
+
+def process_pdf(args: Tuple) -> dict:
+    """Traite un fichier .pdf -> .docx"""
+    pdf_path, dest_dir, on_exists = args
+    pdf_path = Path(pdf_path)
+    dest_dir = Path(dest_dir)
+
+    expected = dest_dir / (pdf_path.stem + ".docx")
+    action = ""
+    message = ""
+    out_path = ""
+
+    if not PDF2DOCX_AVAILABLE:
+        return {
+            "Type": "PDF->DOCX",
+            "Fichier source": pdf_path.name,
+            "Chemin source": str(pdf_path),
+            "Action": "échec",
+            "Message": "pdf2docx non disponible",
+            "Fichier généré": "",
+        }
 
     try:
-        if target.exists():
+        if expected.exists():
             if on_exists == "skip":
-                return True, "ignoré (existe déjà, skip)", ""
+                action, message, out_path = "ignoré", "existe déjà (skip)", ""
             elif on_exists == "overwrite":
-                # on supprime le fichier pour éviter conflits d'ouverture
                 try:
-                    target.unlink()
+                    expected.unlink()
                 except Exception:
                     pass
-                final_path = target
+                cv = PdfConverter(str(pdf_path))
+                cv.convert(str(expected), start=0, end=None)
+                cv.close()
+                if expected.exists():
+                    action, message, out_path = "converti", "converti (écrasé)", str(expected)
+                else:
+                    action, message = "échec", "échec conversion (sortie manquante)"
             elif on_exists == "suffix":
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                final_path = target.with_name(f"{target.stem}_{ts}{target.suffix}")
+                final_path = expected.with_name(f"{expected.stem}_{ts}{expected.suffix}")
+                cv = PdfConverter(str(pdf_path))
+                cv.convert(str(final_path), start=0, end=None)
+                cv.close()
+                if final_path.exists():
+                    action, message, out_path = "converti", "converti (suffixé)", str(final_path)
+                else:
+                    action, message = "échec", "échec conversion (sortie manquante)"
         else:
-            final_path = target
-
-        # Conversion PDF -> DOCX
-        cv = PdfConverter(str(pdf_path))
-        cv.convert(str(final_path), start=0, end=None)
-        cv.close()
-
-        if final_path.exists():
-            if on_exists == "overwrite" and target == final_path:
-                return True, "converti (écrasé)", str(final_path)
-            elif on_exists == "suffix" and final_path.name != target.name:
-                return True, "converti (suffixé)", str(final_path)
+            cv = PdfConverter(str(pdf_path))
+            cv.convert(str(expected), start=0, end=None)
+            cv.close()
+            if expected.exists():
+                action, message, out_path = "converti", "converti", str(expected)
             else:
-                return True, "converti", str(final_path)
-        else:
-            return False, "échec conversion (sortie manquante)", ""
+                action, message = "échec", "échec conversion (sortie manquante)"
 
     except Exception as e:
-        return False, f"échec conversion PDF ({e.__class__.__name__}: {e})", ""
+        action, message = "échec", f"échec conversion PDF ({e.__class__.__name__}: {e})"
+
+    return {
+        "Type": "PDF->DOCX",
+        "Fichier source": pdf_path.name,
+        "Chemin source": str(pdf_path),
+        "Action": action,
+        "Message": message,
+        "Fichier généré": out_path,
+    }
 
 
-def copy_with_policy(src: Path, dest: Path, on_exists: str) -> tuple[bool, str, str]:
-    """
-    Copie src -> dest en appliquant la politique de collision.
-    Retourne (success, action_message, final_path).
-    """
-    dest.parent.mkdir(parents=True, exist_ok=True)
+def process_copy(args: Tuple) -> dict:
+    """Copie un fichier .docx"""
+    src_docx, dest_dir, on_exists = args
+    src_docx = Path(src_docx)
+    dest_dir = Path(dest_dir)
 
-    if dest.exists():
+    expected = dest_dir / src_docx.name
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    action = ""
+    msg = ""
+    out_path = ""
+
+    if expected.exists():
         if on_exists == "skip":
-            return True, "ignoré (existe déjà)", ""
+            action, msg = "copié", "ignoré (existe déjà)"
         elif on_exists == "overwrite":
-            shutil.copy2(src, dest)
-            return True, "copié (écrasé)", str(dest)
+            shutil.copy2(src_docx, expected)
+            action, msg, out_path = "copié", "copié (écrasé)", str(expected)
         elif on_exists == "suffix":
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            final = dest.with_name(f"{dest.stem}_{ts}{dest.suffix}")
-            shutil.copy2(src, final)
-            return True, "copié (suffixé)", str(final)
+            final = expected.with_name(f"{expected.stem}_{ts}{expected.suffix}")
+            shutil.copy2(src_docx, final)
+            action, msg, out_path = "copié", "copié (suffixé)", str(final)
     else:
-        shutil.copy2(src, dest)
-        return True, "copié", str(dest)
+        shutil.copy2(src_docx, expected)
+        action, msg, out_path = "copié", "copié", str(expected)
 
-    return False, "inconnu", ""  # ne devrait pas arriver
+    return {
+        "Type": "COPIE DOCX",
+        "Fichier source": src_docx.name,
+        "Chemin source": str(src_docx),
+        "Action": action,
+        "Message": msg,
+        "Fichier généré": out_path,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Conversion DOC & PDF -> DOCX + copie des DOCX existants, avec rapport Excel et gestion des collisions."
+        description="Conversion DOC & PDF -> DOCX + copie des DOCX existants (parallélisé)."
     )
     parser.add_argument("--source", type=str, default=DEFAULT_SOURCE,
                         help="Dossier source (défaut: ./dedupe)")
@@ -148,6 +248,8 @@ def main():
                         help="Collision policy: skip | overwrite | suffix (défaut: skip)")
     parser.add_argument("--report", type=str, default=DEFAULT_REPORT,
                         help="Nom du fichier Excel de rapport (défaut: convert_report.xlsx)")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help="Nombre de workers (défaut: 0 = auto)")
     args = parser.parse_args()
 
     source_dir = Path(args.source).resolve()
@@ -165,141 +267,77 @@ def main():
         sys.exit(1)
 
     # Collecte
-    docs  = sorted([p for p in source_dir.iterdir() if p.is_file() and p.suffix.lower() == ".doc"])
-    pdfs  = sorted([p for p in source_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"])
+    docs = sorted([p for p in source_dir.iterdir() if p.is_file() and p.suffix.lower() == ".doc"])
+    pdfs = sorted([p for p in source_dir.iterdir() if p.is_file() and p.suffix.lower() == ".pdf"])
     docxs = sorted([p for p in source_dir.iterdir() if p.is_file() and p.suffix.lower() == ".docx"])
 
-    print(f"▶️  Conversion & copie")
+    workers = args.workers if args.workers > 0 else os.cpu_count()
+    total = len(docs) + len(pdfs) + len(docxs)
+
+    print(f"▶️  Conversion & copie (parallélisé avec {workers} workers)")
     print(f"    - Source : {source_dir}")
     print(f"    - Sortie : {dest_dir}")
     print(f"    - soffice: {soffice_path}")
     print(f"    - pdf2docx: {'OK' if PDF2DOCX_AVAILABLE else 'NON DISPONIBLE'}")
-    print(f"    - Collision: {args.on_exists}\n")
+    print(f"    - Collision: {args.on_exists}")
+    print(f"    - Fichiers: {len(docs)} DOC, {len(pdfs)} PDF, {len(docxs)} DOCX\n")
 
     rows = []
+    stats = {
+        "doc_ok": 0, "doc_skip": 0, "doc_fail": 0,
+        "pdf_ok": 0, "pdf_skip": 0, "pdf_fail": 0,
+        "copy_ok": 0, "copy_skip": 0,
+    }
 
-    # Compteurs
-    total_docs = len(docs)
-    total_pdfs = len(pdfs)
-    total_docxs = len(docxs)
-    # DOC
-    converted_doc = overwritten_doc = suffixed_doc = skipped_doc = failed_doc = 0
-    # PDF
-    converted_pdf = overwritten_pdf = suffixed_pdf = skipped_pdf = failed_pdf = 0
-    # COPY DOCX
-    copied = overwritten_copy = suffixed_copy = skipped_copy = 0
+    # Préparer les tâches
+    doc_tasks = [(str(p), str(dest_dir), str(soffice_path), args.on_exists) for p in docs]
+    pdf_tasks = [(str(p), str(dest_dir), args.on_exists) for p in pdfs]
+    copy_tasks = [(str(p), str(dest_dir), args.on_exists) for p in docxs]
 
-    # 1) Conversion des .doc -> .docx (soffice)
-    for doc_path in docs:
-        expected = dest_dir / (doc_path.stem + ".docx")
-        action = ""
-        message = ""
-        out_path = ""
+    completed = 0
 
-        if expected.exists():
-            if args.on_exists == "skip":
-                action, message = "ignoré", "existe déjà (skip)"
-                skipped_doc += 1
-            elif args.on_exists == "overwrite":
-                ok, out = run_soffice_convert(soffice_path, doc_path, dest_dir)
-                if ok:
-                    action, message, out_path = "converti (écrasé)", "overwrite", str(expected)
-                    overwritten_doc += 1
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        # Soumettre toutes les tâches
+        futures = {}
+
+        for task in doc_tasks:
+            futures[executor.submit(process_doc, task)] = "DOC"
+        for task in pdf_tasks:
+            futures[executor.submit(process_pdf, task)] = "PDF"
+        for task in copy_tasks:
+            futures[executor.submit(process_copy, task)] = "COPY"
+
+        # Collecter les résultats
+        for future in as_completed(futures):
+            completed += 1
+            task_type = futures[future]
+            result = future.result()
+            rows.append(result)
+
+            # Mise à jour des stats
+            action = result["Action"]
+            if task_type == "DOC":
+                if "ignoré" in action:
+                    stats["doc_skip"] += 1
+                elif "échec" in action:
+                    stats["doc_fail"] += 1
                 else:
-                    action, message = "échec", f"conversion échouée | {out}"
-                    failed_doc += 1
-            elif args.on_exists == "suffix":
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tmp_out = Path(tmpdir)
-                    ok, out = run_soffice_convert(soffice_path, doc_path, tmp_out)
-                    if ok:
-                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        final = expected.with_name(f"{expected.stem}_{ts}{expected.suffix}")
-                        (tmp_out / expected.name).replace(final)
-                        action, message, out_path = "converti (suffixé)", "collision évitée", str(final)
-                        suffixed_doc += 1
-                    else:
-                        action, message = "échec", f"conversion échouée | {out}"
-                        failed_doc += 1
-        else:
-            ok, out = run_soffice_convert(soffice_path, doc_path, dest_dir)
-            if ok:
-                action, message, out_path = "converti", "OK", str(expected)
-                converted_doc += 1
-            else:
-                action, message = "échec", f"conversion échouée | {out}"
-                failed_doc += 1
-
-        rows.append({
-            "Type": "DOC->DOCX",
-            "Fichier source": doc_path.name,
-            "Chemin source": str(doc_path),
-            "Action": action,
-            "Message": message,
-            "Fichier généré": out_path,
-        })
-        print(f"- [DOC ] {doc_path.name}: {action} | {message} -> {out_path if out_path else expected}")
-
-    # 2) Conversion des .pdf -> .docx (pdf2docx)
-    for pdf_path in pdfs:
-        expected = dest_dir / (pdf_path.stem + ".docx")
-        if expected.exists() and args.on_exists == "skip":
-            action, message, out_path = "ignoré", "existe déjà (skip)", ""
-            skipped_pdf += 1
-        elif expected.exists() and args.on_exists in {"overwrite", "suffix"}:
-            ok, msg, out_path = convert_pdf_with_policy(pdf_path, expected, args.on_exists)
-            if ok:
-                if "écrasé" in msg:
-                    overwritten_pdf += 1
-                elif "suffixé" in msg:
-                    suffixed_pdf += 1
+                    stats["doc_ok"] += 1
+            elif task_type == "PDF":
+                if "ignoré" in action:
+                    stats["pdf_skip"] += 1
+                elif "échec" in action:
+                    stats["pdf_fail"] += 1
                 else:
-                    converted_pdf += 1
-                action, message = "converti", msg
-            else:
-                action, message = "échec", msg
-                failed_pdf += 1
-        else:
-            ok, msg, out_path = convert_pdf_with_policy(pdf_path, expected, "skip")
-            if ok:
-                converted_pdf += 1
-                action, message = "converti", msg
-            else:
-                action, message = "échec", msg
-                failed_pdf += 1
+                    stats["pdf_ok"] += 1
+            else:  # COPY
+                if "ignoré" in result["Message"]:
+                    stats["copy_skip"] += 1
+                else:
+                    stats["copy_ok"] += 1
 
-        rows.append({
-            "Type": "PDF->DOCX",
-            "Fichier source": pdf_path.name,
-            "Chemin source": str(pdf_path),
-            "Action": action,
-            "Message": message,
-            "Fichier généré": out_path,
-        })
-        print(f"- [PDF ] {pdf_path.name}: {action} | {message} -> {out_path if out_path else expected}")
-
-    # 3) Copie des .docx déjà au bon format
-    for src_docx in docxs:
-        expected = dest_dir / src_docx.name
-        ok, msg, out_path = copy_with_policy(src_docx, expected, args.on_exists)
-        if "ignoré" in msg:
-            skipped_copy += 1
-        elif "écrasé" in msg:
-            overwritten_copy += 1
-        elif "suffixé" in msg:
-            suffixed_copy += 1
-        elif "copié" in msg:
-            copied += 1
-
-        rows.append({
-            "Type": "COPIE DOCX",
-            "Fichier source": src_docx.name,
-            "Chemin source": str(src_docx),
-            "Action": "copié" if ok else "échec",
-            "Message": msg,
-            "Fichier généré": out_path,
-        })
-        print(f"- [COPY] {src_docx.name}: {msg} -> {out_path if out_path else expected}")
+            # Affichage progression
+            print(f"[{completed}/{total}] [{task_type:4}] {result['Fichier source']}: {result['Action']}")
 
     # Rapport Excel
     report_path = Path(args.report).resolve()
@@ -308,9 +346,9 @@ def main():
         df.to_excel(writer, index=False, sheet_name="Conversions & Copies")
 
     print("\n✅ Terminé.")
-    print(f"   DOC  traités : {total_docs} | convertis: {converted_doc}, écrasés: {overwritten_doc}, suffixés: {suffixed_doc}, ignorés: {skipped_doc}, échecs: {failed_doc}")
-    print(f"   PDF  traités : {total_pdfs} | convertis: {converted_pdf}, écrasés: {overwritten_pdf}, suffixés: {suffixed_pdf}, ignorés: {skipped_pdf}, échecs: {failed_pdf}")
-    print(f"   DOCX traités : {total_docxs} | copiés: {copied}, écrasés: {overwritten_copy}, suffixés: {suffixed_copy}, ignorés: {skipped_copy}")
+    print(f"   DOC  : {len(docs):3d} | convertis: {stats['doc_ok']}, ignorés: {stats['doc_skip']}, échecs: {stats['doc_fail']}")
+    print(f"   PDF  : {len(pdfs):3d} | convertis: {stats['pdf_ok']}, ignorés: {stats['pdf_skip']}, échecs: {stats['pdf_fail']}")
+    print(f"   DOCX : {len(docxs):3d} | copiés: {stats['copy_ok']}, ignorés: {stats['copy_skip']}")
     print(f"📄 Rapport Excel : {report_path}")
 
 
