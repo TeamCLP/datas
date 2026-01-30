@@ -21,6 +21,7 @@ export no_proxy="$NO_PROXY_LIST"
 export HTTP_PROXY="$HTTP_PROXY_URL"
 export HTTPS_PROXY="$HTTPS_PROXY_URL"
 export NO_PROXY="$NO_PROXY_LIST"
+export PATH="/opt/miniconda/bin:$PATH"
 
 echo "[OK] Proxy exports appliqués."
 
