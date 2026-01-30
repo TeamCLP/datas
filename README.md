@@ -126,6 +126,7 @@ Il repose sur **6 scripts Python**, exécutés dans cet ordre :
 ### **2) Installer l'environnement**
 
 ```bash
+bash
 git clone https://github.com/TeamCLP/datas.git /home/datas && source /home/datas/install.sh
 ```
 
