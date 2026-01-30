@@ -5,7 +5,7 @@ Il repose sur **trois scripts Python** travaillant de manière séquentielle :
 
 1. `clean_extension.py` → Nettoyage & filtrage des extensions  
 2. `dedupe.py` → Dédoublonnage intelligent (Word > PDF)  
-3. `convert_to_docx.py` → Conversion DOC → DOCX + copie des DOCX
+3. `convert_to_docx.py` → Conversion DOC→DOCX, PDF→DOCX + copie des DOCX
 
 L’objectif final est d’obtenir un corpus documentaire propre, cohérent et normalisé.
 
@@ -71,7 +71,7 @@ datas/
 ├── raw/                   # Contenu brut extrait
 ├── clean_extension/       # Fichiers filtrés + Excel de traçabilité
 ├── dedupe/                # Fichiers dédoublonnés + Excel de traçabilité
-├── docx/                  # DOC convertis + DOCX copiés + Excel
+├── docx/                  # Fichiers convertis + copies + Excel
 │
 ├── clean_extension.py
 ├── dedupe.py
@@ -202,26 +202,58 @@ dedupe_report.xlsx
 
 ---
 
-# 🔁 5. Étape 3 — Conversion DOC→DOCX + copie des DOCX  
+# 🔁 5. Étape 3 — Conversion DOC→DOCX, PDF→DOCX & copie des DOCX  
 **Script : `convert_to_docx.py`**
 
-### Rôle
+## Rôle
 
-- Parcourt `dedupe/`
-- Convertit tous les `.doc` via LibreOffice en `.docx`
-- Copie tous les `.docx` déjà conformes
-- Écrit tout dans : **`docx/`**
-- Produit un rapport Excel : **`convert_report.xlsx`**
+Ce script traite **trois types d’entrées** depuis `dedupe/` :
 
-### Gestion des collisions (`--on-exists`)
+1. **`.doc` → `.docx`** via LibreOffice (`soffice`)  
+2. **`.pdf` → `.docx`** via la librairie **pdf2docx**  
+3. **`.docx` → copie directe**  
 
-| Option | Comportement |
-|--------|--------------|
-| `skip` (défaut) | ignore si un fichier cible existe déjà |
-| `overwrite` | écrase le fichier existant |
-| `suffix` | crée une nouvelle version `_YYYYMMDD_HHMMSS` |
+Tous les fichiers sont déposés dans :
 
-### Exécution
+```
+docx/
+```
+
+Un rapport unique assure la traçabilité :
+
+```
+convert_report.xlsx
+```
+
+---
+
+## Règles appliquées aux PDF
+
+- Tous les `.pdf` présents dans `dedupe/` sont convertis en `.docx`
+- Conversion réalisée via **pdf2docx**
+- Gestion des collisions via `--on-exists` :
+
+| Option         | Comportement PDF → DOCX |
+|----------------|--------------------------|
+| `skip`         | ignore si le `.docx` existe déjà |
+| `overwrite`    | remplace le `.docx` existant |
+| `suffix`       | crée `nom_YYYYMMDD_HHMMSS.docx` |
+
+---
+
+## Dépendances PDF
+
+La conversion PDF nécessite :
+
+```
+pdf2docx
+```
+
+Ce package est installé automatiquement via `requirements.txt`.
+
+---
+
+## Exécution
 
 ```bash
 python3 convert_to_docx.py
@@ -241,6 +273,16 @@ Sorties :
 docx/
 convert_report.xlsx
 ```
+
+---
+
+## Récapitulatif des conversions gérées
+
+| Format d'entrée | Traitement | Méthode | Sortie |
+|------------------|------------|----------|---------|
+| `.doc`           | Converti   | LibreOffice (soffice) | `.docx` |
+| `.pdf`           | Converti   | pdf2docx | `.docx` |
+| `.docx`          | Copié tel quel | — | `.docx` |
 
 ---
 
