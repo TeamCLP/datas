@@ -16,10 +16,12 @@ Dépendances:
 from __future__ import annotations
 
 import re
+import os
 import logging
 import traceback
 from pathlib import Path
 from typing import List, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import pandas as pd
 import mammoth
@@ -60,6 +62,12 @@ OUTPUT_DIRNAME = "dataset_markdown"
 LOG_DIRNAME = "_logs"
 SUBDIR_NDC = "ndc"
 SUBDIR_EDB = "edb"
+
+# ------------------------------
+# PARALLÉLISATION
+# ------------------------------
+# Nombre de workers (0 = auto = nombre de CPU)
+MAX_WORKERS = 0
 
 # Style mapping Mammoth : ignorer les styles de TOC et mapper les autres
 MAMMOTH_STYLE_MAP = """
@@ -513,6 +521,46 @@ def load_targets_from_excel(excel_path: Path) -> Tuple[List[str], List[str]]:
 
 
 # ------------------------------
+# Traitement d'un fichier (pour parallélisation)
+# ------------------------------
+def process_single_file(args: Tuple[str, str, Path, Path, Path]) -> Tuple[str, str, str, str, str, str]:
+    """
+    Traite un seul fichier DOCX -> Markdown.
+    Retourne un tuple pour le rapport.
+    """
+    name, mode, cwd, out_dir, log_dir = args
+
+    src = cwd / name
+    ext = src.suffix.lower()
+
+    if not ext:
+        src = src.with_suffix(".docx")
+    elif ext != ".docx":
+        src = src.with_suffix(".docx")
+
+    if not src.exists():
+        return (mode, name, str(src), "", "MISSING", "Fichier introuvable")
+
+    try:
+        md_content = docx_to_markdown(src)
+
+        out_name = Path(name).stem + ".md"
+        out_path = out_dir / out_name
+        out_path.write_text(md_content, encoding="utf-8")
+
+        return (mode, name, str(src), str(out_path), "OK", "")
+
+    except Exception as ex:
+        err_msg = f"{type(ex).__name__}: {ex}"
+
+        trace = traceback.format_exc()
+        log_file = log_dir / (Path(name).stem + f".{mode}.error.log")
+        log_file.write_text(trace, encoding="utf-8")
+
+        return (mode, name, str(src), "", "ERROR", err_msg)
+
+
+# ------------------------------
 # Programme principal
 # ------------------------------
 def main() -> int:
@@ -540,55 +588,38 @@ def main() -> int:
         logger.info("Aucun fichier à traiter.")
         return 0
 
+    # Préparer les tâches
+    tasks = []
+    for f in ndc_list:
+        tasks.append((f, "ndc", cwd, out_ndc, log_dir))
+    for f in edb_list:
+        tasks.append((f, "edb", cwd, out_edb, log_dir))
+
+    total = len(tasks)
+    workers = MAX_WORKERS if MAX_WORKERS > 0 else os.cpu_count()
+    logger.info(f"Traitement de {total} fichiers avec {workers} workers...")
+
     report_rows = []
     stats = {"ok": 0, "error": 0, "missing": 0}
 
-    def process_file(name: str, mode: str):
-        src = cwd / name
-        ext = src.suffix.lower()
+    # Traitement parallèle
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(process_single_file, task): task for task in tasks}
 
-        # S'assurer que c'est un .docx
-        if not ext:
-            src = src.with_suffix(".docx")
-        elif ext != ".docx":
-            # Chercher la version .docx
-            src = src.with_suffix(".docx")
+        for i, future in enumerate(as_completed(futures), 1):
+            result = future.result()
+            mode, name, src, out_path, status, error = result
+            report_rows.append(result)
 
-        out_dir = out_ndc if mode == "ndc" else out_edb
-
-        if not src.exists():
-            stats["missing"] += 1
-            report_rows.append((mode, name, str(src), "", "MISSING", "Fichier introuvable"))
-            logger.warning(f"Introuvable: {src}")
-            return
-
-        try:
-            md_content = docx_to_markdown(src)
-
-            out_name = Path(name).stem + ".md"
-            out_path = out_dir / out_name
-            out_path.write_text(md_content, encoding="utf-8")
-
-            stats["ok"] += 1
-            report_rows.append((mode, name, str(src), str(out_path), "OK", ""))
-            logger.info(f"[OK] ({mode}) {src.name} -> {out_path.name}")
-
-        except Exception as ex:
-            stats["error"] += 1
-            err_msg = f"{type(ex).__name__}: {ex}"
-            report_rows.append((mode, name, str(src), "", "ERROR", err_msg))
-
-            trace = traceback.format_exc()
-            log_file = log_dir / (Path(name).stem + f".{mode}.error.log")
-            log_file.write_text(trace, encoding="utf-8")
-
-            logger.error(f"[ERREUR] ({mode}) {src.name}: {err_msg}")
-
-    for f in ndc_list:
-        process_file(f, mode="ndc")
-
-    for f in edb_list:
-        process_file(f, mode="edb")
+            if status == "OK":
+                stats["ok"] += 1
+                logger.info(f"[{i}/{total}] OK ({mode}) {Path(name).name}")
+            elif status == "MISSING":
+                stats["missing"] += 1
+                logger.warning(f"[{i}/{total}] MISSING ({mode}) {name}")
+            else:
+                stats["error"] += 1
+                logger.error(f"[{i}/{total}] ERROR ({mode}) {name}: {error}")
 
     report_df = pd.DataFrame(
         report_rows,
