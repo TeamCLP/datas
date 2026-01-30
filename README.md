@@ -101,17 +101,14 @@ Ce dépôt contient un pipeline complet permettant de transformer un lot de docu
 - exporté en Markdown
 - prêt pour fine-tuning LLM (dataset JSONL)
 
-Il repose sur **sept scripts Python** :
+Il repose sur **7 scripts Python**, exécutés dans cet ordre :
 
-**Pipeline principal (étapes 1-5) :**
-1. `clean_extension.py`
-2. `dedupe.py`
-3. `convert_to_docx.py`
-4. `classify_docx.py`
-5. `convert_classified_to_md.py`
-
-**Scripts complémentaires :**
-6. `extract_docx_to_markdown.py` — Extraction DOCX → Markdown (via Excel de mapping)
+1. `clean_extension.py` — Filtrage des extensions valides
+2. `dedupe.py` — Dédoublonnage intelligent
+3. `convert_to_docx.py` — Conversion DOC/PDF → DOCX (parallélisé)
+4. `classify_docx.py` — Classification EDB / NDC / AUTRES
+5. `convert_classified_to_md.py` — Export Markdown (python-docx)
+6. `extract_docx_to_markdown.py` — Export Markdown avancé (Mammoth, parallélisé)
 7. `build_dataset_jsonl.py` — Constitution dataset JSONL pour fine-tuning  
 
 ---
@@ -244,27 +241,28 @@ python dedupe.py
 
 ---
 
-# 🔁 3. Étape 3 — Conversion DOC→DOCX & PDF→DOCX  
-**Script : `convert_to_docx.py`**
+# 🔁 3. Étape 3 — Conversion DOC→DOCX & PDF→DOCX
+**Script : `convert_to_docx.py`** (parallélisé)
 
 ### Rôle
 
-- Conversion `.doc` via LibreOffice  
-- Conversion `.pdf` via `pdf2docx`  
-- Copie des `.docx` existants  
+- Conversion `.doc` via LibreOffice
+- Conversion `.pdf` via `pdf2docx`
+- Copie des `.docx` existants
+- **Parallélisé** avec ProcessPoolExecutor
 - Output : `docx/`
 - Rapport : `convert_report.xlsx`
 
 ### Options
 
-- `--on-exists skip` (défaut)  
-- `--on-exists overwrite`  
-- `--on-exists suffix`  
+- `--on-exists skip` (défaut) / `overwrite` / `suffix`
+- `--workers N` (défaut: auto = nombre de CPU)
 
 ### Exécution
 
 ```bash
 python convert_to_docx.py
+python convert_to_docx.py --workers 4  # limiter à 4 workers
 ```
 
 ---
@@ -338,17 +336,18 @@ python convert_classified_to_md.py
 
 ---
 
-# 📤 6. Extraction DOCX → Markdown (alternative)
+# 📤 6. Étape 6 — Extraction DOCX → Markdown (Mammoth)
 **Script : `extract_docx_to_markdown.py`**
 
 ### Rôle
 
-Script alternatif d'extraction basé sur un fichier Excel de mapping :
+Extraction avancée basée sur un fichier Excel de mapping :
 
 - Lit un fichier Excel contenant les chemins des EDB et NDC
-- Convertit les DOCX en Markdown via **Mammoth** (meilleure qualité)
+- Convertit les DOCX en Markdown via **Mammoth** (meilleure qualité que python-docx)
 - Supprime automatiquement : page de garde, table des matières, préambule
 - Préserve : titres, paragraphes, listes, tableaux
+- **Parallélisé** avec ProcessPoolExecutor
 
 ### Configuration
 
@@ -379,7 +378,7 @@ python extract_docx_to_markdown.py
 
 ---
 
-# 🤖 7. Constitution du dataset JSONL
+# 🤖 7. Étape 7 — Constitution du dataset JSONL
 **Script : `build_dataset_jsonl.py`**
 
 ### Rôle
@@ -426,16 +425,25 @@ python build_dataset_jsonl.py --strategy all_combinations --train_ratio 0.8
 # 🧭 8. Pipeline complet (ordre recommandé)
 
 ```bash
-# Pipeline principal (traitement des documents bruts)
+# 1-4: Préparation des documents
 python clean_extension.py
 python dedupe.py
 python convert_to_docx.py
 python classify_docx.py
+
+# 5: Export Markdown basique (python-docx)
 python convert_classified_to_md.py
 
-# Constitution du dataset LLM (après le pipeline principal)
+# 6: Export Markdown avancé (Mammoth) - parallélisé
+python extract_docx_to_markdown.py
+
+# 7: Constitution du dataset JSONL
 python build_dataset_jsonl.py --report
 ```
+
+**Note :** Les étapes 5 et 6 sont deux méthodes d'export Markdown. Utilisez :
+- Étape 5 (`convert_classified_to_md.py`) : export rapide, basé sur python-docx
+- Étape 6 (`extract_docx_to_markdown.py`) : export avancé avec Mammoth, meilleure qualité, parallélisé
 
 ---
 
