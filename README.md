@@ -11,7 +11,58 @@ L’objectif final est d’obtenir un corpus documentaire propre, cohérent et n
 
 ---
 
-## 🧱 Architecture finale
+# 🚀 Exécution depuis un Pod JupyterLab (template *scribe*)
+
+## ✔️ Instructions exactes à suivre
+
+### **1) Créer un Pod**
+- Utiliser le **template scribe**
+- **Ne pas allouer de GPU**
+- Ouvrir JupyterLab
+- Ouvrir un Terminal
+
+### **2) Installer l’environnement**
+Dans le terminal JupyterLab :
+
+```bash
+bash
+git clone https://github.com/TeamCLP/datas.git /home/datas && source /home/datas/install.sh
+```
+
+> Le script `install.sh` configure automatiquement :  
+> - Proxy  
+> - LibreOffice  
+> - Miniconda + Python 3.13  
+> - Environnement conda `pipeline`  
+> - Installation du `requirements.txt`  
+> - Activation automatique du venv  
+> - Positionnement dans `/home/datas`
+
+### **3) Déposer les données sources**
+Déposer `raw_datas.tar` dans :
+
+```
+/home/datas
+```
+
+Puis exécuter :
+
+```bash
+mkdir raw && tar -xvf raw_datas.tar -C raw/
+```
+
+### **4) Lancer le pipeline**
+Toujours depuis `/home/datas` avec conda actif :
+
+```bash
+python clean_extension.py
+python dedupe.py
+python convert_to_docx.py
+```
+
+---
+
+# 🧱 Architecture finale
 
 Après exécution :
 
@@ -30,7 +81,7 @@ datas/
 
 ---
 
-## ⚙️ 1. Préparation de l’environnement
+# ⚙️ 1. Préparation de l’environnement (si exécution hors Pod)
 
 ### Installer Python et LibreOffice
 
@@ -50,7 +101,7 @@ pip install pandas openpyxl
 
 ---
 
-## 📥 2. Récupération du dépôt & préparation des données
+# 📥 2. Récupération du dépôt & préparation des données
 
 Cloner le repo :
 
@@ -79,18 +130,16 @@ datas/
 
 ---
 
-## 🚀 3. Étape 1 — Nettoyage des extensions  
+# 🚀 3. Étape 1 — Nettoyage des extensions  
 **Script : `clean_extension.py`**
 
 ### Rôle
 
 - Parcourt le dossier `raw/`
 - Ne conserve que :
-
   - `.pdf`
   - `.doc`
   - `.docx`
-
 - Ajoute un suffixe anti-collision `_YYYYMMDD_HHMMSS` si nécessaire
 - Produit un rapport Excel : **`inventaire_raw.xlsx`**
 - Remplit le dossier `clean_extension/`
@@ -110,7 +159,7 @@ inventaire_raw.xlsx
 
 ---
 
-## 🧹 4. Étape 2 — Dédoublonnage intelligent  
+# 🧹 4. Étape 2 — Dédoublonnage intelligent  
 **Script : `dedupe.py`**
 
 ### Règles métier appliquées (par nom de base, suffixe horodaté neutralisé)
@@ -127,11 +176,9 @@ Tous les autres fichiers du groupe → **ignorés**.
 
 - Génère un rapport Excel **avant copie** : `dedupe_report.xlsx`
 - Explique pour chaque fichier :
-
   - Action (conserver / ignorer)
   - Raison
   - Chemins source & destination
-
 - Copie les fichiers “conserver” dans : **`dedupe/`**
 
 ### Exécution
@@ -155,7 +202,7 @@ dedupe_report.xlsx
 
 ---
 
-## 🔁 5. Étape 3 — Conversion DOC→DOCX + copie des DOCX  
+# 🔁 5. Étape 3 — Conversion DOC→DOCX + copie des DOCX  
 **Script : `convert_to_docx.py`**
 
 ### Rôle
@@ -197,7 +244,7 @@ convert_report.xlsx
 
 ---
 
-## 🧭 6. Pipeline complet (ordre recommandé)
+# 🧭 6. Pipeline complet (ordre recommandé)
 
 ```bash
 python3 clean_extension.py
@@ -207,7 +254,7 @@ python3 convert_to_docx.py
 
 ---
 
-## 📊 7. Fichiers Excel générés
+# 📊 7. Fichiers Excel générés
 
 | Étape | Fichier | Contenu |
 |-------|---------|----------|
@@ -217,7 +264,7 @@ python3 convert_to_docx.py
 
 ---
 
-## ⭐ Bonnes pratiques
+# ⭐ Bonnes pratiques
 
 - Toujours exécuter le pipeline **dans l’ordre** : Clean → Dedupe → Convert  
 - Ne jamais modifier manuellement `clean_extension/` ou `dedupe/`  
@@ -227,7 +274,7 @@ python3 convert_to_docx.py
 
 ---
 
-## 🧩 Résultat attendu
+# 🧩 Résultat attendu
 
 À la fin du pipeline :
 
